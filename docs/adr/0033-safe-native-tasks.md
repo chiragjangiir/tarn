@@ -188,8 +188,9 @@ Transfer and Share are semantic core declaration identities, not runtime dispatc
 interfaces. Both are structural for scalars, strings, arrays and substituted ADT
 fields/payloads. Neither implies Copy or the other capability. Shared references
 require Share referents, mutable references require Transfer referents and are not
-Share. Task<R> requires Transfer for R and is never Share. Recursive queries reject
-cycles and stop at depth 64 or 4096 nodes. Unknown resources default to neither;
+Share. Task<R> requires Transfer for R and is never Share. Recursive queries are
+coinductive (a repeated query holds; amended after a recursive `Tree` with
+`Vec<Tree>` could never be Transfer) and stop conservatively at depth 64 or 4096 nodes. Unknown resources default to neither;
 explicit NativeCapabilities entries in Decls grant trusted type/interface evidence.
 Dynamic method sets and concrete implementations alone grant no erased capability.
 

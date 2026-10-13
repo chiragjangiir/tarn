@@ -1,0 +1,35 @@
+// Concrete only after specialization: the frontend cannot size `t`, so the
+// backend reports the limit (E3075 covers concrete source locals).
+copy struct Triple<T: Copy> {
+    a T
+    b T
+    c T
+}
+fn s1<T: Copy>(x T) i32 {
+    t := Triple{a: x, b: x, c: x}
+    return s2(t)
+}
+fn s2<T: Copy>(x T) i32 {
+    t := Triple{a: x, b: x, c: x}
+    return s3(t)
+}
+fn s3<T: Copy>(x T) i32 {
+    t := Triple{a: x, b: x, c: x}
+    return s4(t)
+}
+fn s4<T: Copy>(x T) i32 {
+    t := Triple{a: x, b: x, c: x}
+    return s5(t)
+}
+fn s5<T: Copy>(x T) i32 {
+    t := Triple{a: x, b: x, c: x}
+    return s6(t)
+}
+fn s6<T: Copy>(x T) i32 {
+    t := Triple{a: x, b: x, c: x}
+    return 0
+}
+fn main() {
+    data := [100]u64{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}
+    print(s1(data))
+}

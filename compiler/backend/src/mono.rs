@@ -100,6 +100,20 @@ pub fn specialize_entry(p: &post::Program, t: &Typed, entry: FunctionId) -> Resu
         for l in &mut f.decl.locals {
             l.ty = tarn_types::subst(&l.ty, &map);
         }
+        // Concrete source locals were checked by the frontend (E3075); generic
+        // ones become concrete only here, before inlining hides their function.
+        if !map.is_empty() {
+            let mut locals: Vec<_> = f.decl.locals.iter().collect();
+            locals.sort_by_key(|l| l.name.is_none());
+            for l in locals {
+                if let Err(e) = tarn_ir::layout::layout(t, &l.ty)
+                    && e.limit
+                {
+                    let binding = l.name.as_deref().map_or_else(|| "a temporary".to_string(), |n| format!("`{n}`"));
+                    return Err(Error::unsupported(format!("{} for {binding} in `{}` once its generic arguments are known", e.message, f.decl.name)));
+                }
+            }
+        }
         if let Some(frame) = f.decl.asynchronous.as_mut().and_then(|a| a.frame.as_mut()) {
             frame.output = tarn_types::subst(&frame.output, &map);
         }

@@ -326,6 +326,7 @@ fn check_loaded_with_bindings((program, mut diagnostics): (Program, Vec<Diagnost
                 tarn_ir::prove_arithmetic(&mut p);
                 diagnostics.extend(d);
                 diagnostics.extend(tarn_ir::check_instantiation_cycles(&p, &t, &r));
+                diagnostics.extend(tarn_ir::check_value_limits(&p, &t, &r));
                 let (m, d) = tarn_ownership::check_moves(&p, &r, &t);
                 diagnostics.extend(d);
                 let (bo, d) = tarn_ownership::check_borrows(&p, &r, &t, &m.failed());

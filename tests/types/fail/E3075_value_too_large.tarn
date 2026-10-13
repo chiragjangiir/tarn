@@ -1,0 +1,11 @@
+// Values are bounded at 64 KiB; the error names the binding, not the backend.
+struct Big {
+    a [4096]u64
+    b [4096]u64
+    c [4096]u64
+}
+fn first(big Big) u64 {
+    return big.a[0]
+}
+fn main() {
+}

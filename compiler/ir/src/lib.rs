@@ -17,6 +17,8 @@
 
 pub mod async_frame;
 mod instantiation;
+pub mod layout;
+mod limits;
 mod lower;
 pub mod post_drop;
 mod ranges;
@@ -24,6 +26,7 @@ mod pretty;
 mod verify;
 
 pub use instantiation::check_instantiation_cycles;
+pub use limits::check_value_limits;
 pub use lower::lower_program;
 pub use ranges::prove_arithmetic;
 pub use pretty::{print_function, print_program, print_program_annotated};

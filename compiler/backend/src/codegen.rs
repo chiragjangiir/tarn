@@ -355,6 +355,11 @@ pub fn emit_entry(p: &post::Program, t: &Typed, test: bool) -> Result<Vec<u8>> {
     let mut settings = settings::builder();
     settings.set("opt_level", "speed").map_err(|e| Error::bug(e.to_string()))?;
     settings.set("is_pic", "false").map_err(|e| Error::bug(e.to_string()))?;
+    // Cranelift's IR verifier checks this backend, not the user's program.
+    // Debug builds of the compiler (and so every test run) keep it; release
+    // builds skip its cost unless TARN_VERIFY_CODEGEN asks for it.
+    let verify = cfg!(debug_assertions) || std::env::var_os("TARN_VERIFY_CODEGEN").is_some();
+    settings.set("enable_verifier", if verify { "true" } else { "false" }).map_err(|e| Error::bug(e.to_string()))?;
     let isa = cranelift_native::builder().map_err(|e| Error::unsupported(e.to_string()))?.finish(settings::Flags::new(settings)).map_err(|e| Error::bug(e.to_string()))?;
     let builder = ObjectBuilder::new(isa, "tarn", cranelift_module::default_libcall_names()).map_err(|e| Error::bug(e.to_string()))?;
     let mut module = ObjectModule::new(builder);
@@ -550,6 +555,9 @@ pub fn emit_entry(p: &post::Program, t: &Typed, test: bool) -> Result<Vec<u8>> {
     let glue = RefCell::new(Vec::new());
     // String literals, emitted once per program as static TarnString images.
     let literals = RefCell::new(HashMap::new());
+    // Translation needs the module; machine-code compilation does not, so it
+    // runs in parallel afterwards (see compile_in_parallel).
+    let mut translated = Vec::new();
     for id in ordered {
         let f = &p.functions[id.0 as usize];
         if f.decl.kind == FnKind::Extern {
@@ -584,9 +592,9 @@ pub fn emit_entry(p: &post::Program, t: &Typed, test: bool) -> Result<Vec<u8>> {
             cx.function()?;
             cx.b.finalize();
         }
-        cranelift_codegen::verify_function(&ctx.func, module.isa()).map_err(|e| Error::bug(format!("{}: {e}", f.decl.name)))?;
-        module.define_function(ids[&id], &mut ctx).map_err(|e| Error::bug(format!("{}: {e}", f.decl.name)))?;
+        translated.push((ids[&id], f.decl.name.as_str(), ctx));
     }
+    compile_in_parallel(&mut module, translated, verify)?;
     let mut thunk_order: Vec<_> = thunks.iter().collect();
     thunk_order.sort_by_key(|(id, _)| **id);
     for (id, thunk) in thunk_order {
@@ -2335,3 +2343,47 @@ mod filesystem;
 mod ffi;
 #[path = "process.rs"]
 mod process;
+
+/// Compile translated functions to machine code on all cores, then define
+/// them in the module sequentially in their original order, so the object
+/// file is byte-identical to a sequential build.
+fn compile_in_parallel(module: &mut ObjectModule, mut translated: Vec<(FuncId, &str, cranelift_codegen::Context)>, verify: bool) -> Result<()> {
+    use std::sync::Mutex;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let isa = module.isa();
+    let workers = std::thread::available_parallelism().map_or(1, |n| n.get()).min(translated.len().max(1));
+    let next = AtomicUsize::new(0);
+    let slots: Vec<Mutex<Option<(FuncId, &str, cranelift_codegen::Context)>>> = translated.drain(..).map(|x| Mutex::new(Some(x))).collect();
+    let failure: Mutex<Option<(usize, Error)>> = Mutex::new(None);
+    std::thread::scope(|scope| {
+        for _ in 0..workers {
+            scope.spawn(|| {
+                loop {
+                    let i = next.fetch_add(1, Ordering::Relaxed);
+                    let Some(slot) = slots.get(i) else { break };
+                    let mut guard = slot.lock().unwrap();
+                    let (_, name, ctx) = guard.as_mut().unwrap();
+                    let result = if verify { cranelift_codegen::verify_function(&ctx.func, isa).map_err(|e| Error::bug(format!("{name}: {e}"))) } else { Ok(()) }
+                        .and_then(|()| ctx.compile(isa, &mut Default::default()).map(|_| ()).map_err(|e| Error::bug(format!("{name}: {:?}", e.inner))));
+                    if let Err(e) = result {
+                        // Report the first failing function in program order.
+                        let mut first = failure.lock().unwrap();
+                        if first.as_ref().is_none_or(|(at, _)| i < *at) {
+                            *first = Some((i, e));
+                        }
+                    }
+                }
+            });
+        }
+    });
+    if let Some((_, e)) = failure.into_inner().unwrap() {
+        return Err(e);
+    }
+    for slot in slots {
+        let (id, name, ctx) = slot.into_inner().unwrap().unwrap();
+        let code = ctx.compiled_code().ok_or_else(|| Error::bug(format!("{name}: missing compiled code")))?;
+        let relocs: Vec<_> = code.buffer.relocs().iter().map(|r| cranelift_module::ModuleReloc::from_mach_reloc(r, &ctx.func, id)).collect();
+        module.define_function_bytes(id, code.buffer.alignment as u64, code.buffer.data(), &relocs).map_err(|e| Error::bug(format!("{name}: {e}")))?;
+    }
+    Ok(())
+}

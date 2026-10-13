@@ -1,0 +1,29 @@
+// Recursive types are Transfer coinductively: the tree crosses a task boundary both ways.
+enum Tree {
+    Leaf(i32)
+    Node(Vec<Tree>)
+}
+fn sum(t &Tree) i32 {
+    match t {
+        Tree.Leaf(v) => return v
+        Tree.Node(children) => {
+            var total = 0
+            for c in children.as_slice() {
+                total = total + sum(c)
+            }
+            return total
+        }
+    }
+}
+fn main() {
+    var kids = Vec.new()
+    kids.push(Tree.Leaf(1))
+    kids.push(Tree.Leaf(2))
+    t := Tree.Node(kids)
+    task := spawn move fn() Tree {
+        print(sum(&t))
+        return t
+    }
+    back := task.join()
+    print(sum(&back))
+}

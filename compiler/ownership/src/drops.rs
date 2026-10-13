@@ -8,14 +8,16 @@ use tarn_types::{Ty, Typed};
 pub fn elaborate_drops(p: &ir::Program, t: &Typed, moves: &MoveResults) -> Result<post::Program, Vec<String>> {
     let mut out = post::Program { functions: Vec::new(), by_symbol: p.by_symbol.clone() };
     let mut errors = Vec::new();
-    for f in &p.functions {
+    // Functions are elaborated independently; results keep program order.
+    let elaborated = crate::util::par_map(p.functions.iter().collect(), |f: &ir::Function| {
+        let mut errors = Vec::new();
         let Some(facts) = moves.functions.get(&f.id) else {
             errors.push(format!("{}: missing move results", f.name));
-            continue;
+            return (None, errors);
         };
         if facts.has_errors {
             errors.push(format!("{}: elaboration after failed move checking", f.name));
-            continue;
+            return (None, errors);
         }
         let mut cx = Cx { f, t, flags: Vec::new() };
         let mut plans = HashMap::new();
@@ -106,17 +108,24 @@ pub fn elaborate_drops(p: &ir::Program, t: &Typed, moves: &MoveResults) -> Resul
         final_blocks.extend(blocks.into_iter().filter_map(|(_, bridge)| bridge));
         let mut decl = f.clone();
         decl.blocks.clear();
-        out.functions.push(post::Function { decl, flags: cx.flags, blocks: final_blocks });
+        (Some(post::Function { decl, flags: cx.flags, blocks: final_blocks }), errors)
+    });
+    for (function, mut function_errors) in elaborated {
+        errors.append(&mut function_errors);
+        out.functions.extend(function);
     }
     if errors.is_empty() {
         errors.extend(post::verify(&out, t));
     }
-    // Verified source async bodies become physical frames (ADR 0037).
-    if errors.is_empty() {
+    // Verified source async bodies become physical frames (ADR 0037). Without
+    // async bodies lowering changes nothing, and its checks are part of the
+    // verification above, so re-verifying the same program is skipped.
+    let has_async = out.functions.iter().any(|f| f.decl.asynchronous.is_some() && !f.blocks.is_empty());
+    if errors.is_empty() && has_async {
         errors.extend(tarn_ir::async_frame::lower(&mut out, t));
-    }
-    if errors.is_empty() {
-        errors.extend(post::verify(&out, t));
+        if errors.is_empty() {
+            errors.extend(post::verify(&out, t));
+        }
     }
     if errors.is_empty() { Ok(out) } else { Err(errors) }
 }

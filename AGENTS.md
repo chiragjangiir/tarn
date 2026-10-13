@@ -196,15 +196,18 @@ x := value
 ### Mutable binding
 
 ```tarn
-var x := value
+var x = value
 ```
 
 ### Explicit type annotation
 
 ```tarn
 x: Type := value
-var x: Type := value
+var x: Type = value
 ```
+
+Immutable bindings use `:=`; mutable bindings use `var` with `=`.
+`var x := value` is a parse error (E1001).
 
 ### Uninitialized mutable binding
 
@@ -405,6 +408,29 @@ Do not introduce syntax for explicit type arguments unless type inference proves
 
 ---
 
+## Specialization and Native Limits
+
+Monomorphization has no instance-count cap. Generic call cycles that grow a
+type argument are rejected before specialization (E3074, ADR 0065); interface
+calls on a type-parameter receiver are not modelled, and the backend type-size
+limit still bounds them.
+
+`tarn_ir::layout` is the single layout authority for the frontend and the
+backend. Concrete values over the v0 limits (64 KiB, 4096 array elements, 64
+nesting levels) are reported at their binding (E3075); values that become
+concrete only through specialization fail in the backend naming the function
+and binding. Do not duplicate layout rules in another phase.
+
+Transfer/Share queries are coinductive: a repeated query holds, so recursive
+types such as `enum Tree { Leaf(i32) Node(Vec<Tree>) }` are decided by their
+non-recursive fields. Exhausted depth or budget stays conservative (ADR 0033).
+
+Dataflow passes (ranges, moves, borrows) visit blocks in reverse postorder
+and keep sparse per-block states. Do not reintroduce dense per-local state
+per block or unordered worklists; `compiler/driver/tests/scaling.rs` guards it.
+
+---
+
 ## Pattern Rules
 
 In patterns:
@@ -505,13 +531,14 @@ Do not introduce a complex Rust-style trait system unless Tarn gains a concrete 
 
 ## Equality
 
-Equality for user-defined types is planned to use an `Eq`-style interface or capability.
+Equality for user-defined types uses `core.Eq` (ADR 0054, 26C):
+`pub interface Eq { fn eq(&self, other &Self) bool }`. `a == b` on a type
+implementing `Eq` lowers to a statically resolved `Eq.eq(&a, &b)`; types
+without an implementation keep E3006.
 
 Do not hardcode structural equality for structs or enums.
 
 Do not introduce automatic `derive` yet.
-
-First define normal semantic behavior.
 
 ---
 
@@ -861,9 +888,12 @@ destruction never performs I/O, so flushing is always explicit.
 
 ## Stdlib Module Layers
 
-ADR 0041. Trusted stdlib modules are core, io, time, net and runtime, embedded
-in the driver. Layers: time and net build on io; runtime builds on io, time
-and net; no import cycles. Private access follows that graph downward only:
+ADR 0041. Trusted stdlib modules are core, io, time, net, runtime, fs, process
+and ffi, embedded in the driver (`TRUSTED_STDLIB`). Layers: time and net build
+on io; runtime builds on io, time and net; fs and process build on io; ffi is
+standalone; no import cycles. Ordinary stdlib modules (http, https, path,
+string, json, os, console, collections, csv) are plain Tarn with no intrinsic
+authority (`ORDINARY_STDLIB`). Private access follows that graph downward only:
 never above or beside, and never from user modules. Do not hardcode a module name in compiler phases; look declarations up
 in their module through `Decls`. Native intrinsics are `<layer>._<operation>`.
 Methods live in their type's module. Avoid module names that are natural

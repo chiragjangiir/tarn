@@ -8,34 +8,42 @@
 
 use crate::paths::{Lookup, MovePathId, MovePaths, PathElem};
 use crate::{DropDecision, FnMoves, InitState};
-use std::collections::{HashMap, HashSet};
+use crate::util::BitSet;
+use std::collections::{BTreeMap, HashMap, HashSet};
 use tarn_diagnostics::{Diagnostic, Span};
 use tarn_ir::{BlockId, Callee, Function, LocalKind, Operand, Place, Rvalue, StatementKind, Terminator};
 use tarn_resolve::Resolved;
 use tarn_types::{Ty, Typed};
 
+/// Initialization bits per move path, plus the move sites of the paths that
+/// may have been moved. Sparse in moves and bit-packed in flags, so states of
+/// long functions stay small to clone and join.
 #[derive(Clone, PartialEq, Debug)]
 struct State {
-    init: Vec<bool>,
-    uninit: Vec<bool>,
+    init: BitSet,
+    uninit: BitSet,
     /// Move sites (indices into `Cx::sites`) that may have moved each path.
-    moves: Vec<Vec<u32>>,
+    moves: BTreeMap<usize, Vec<u32>>,
 }
 
 impl State {
+    fn moves(&self, i: usize) -> &[u32] {
+        self.moves.get(&i).map_or(&[], Vec::as_slice)
+    }
+
     fn join(&mut self, o: &State) -> bool {
-        let before = self.clone();
-        for i in 0..self.init.len() {
-            self.init[i] |= o.init[i];
-            self.uninit[i] |= o.uninit[i];
-            for m in &o.moves[i] {
-                if !self.moves[i].contains(m) {
-                    self.moves[i].push(*m);
+        let mut changed = self.init.union(&o.init);
+        changed |= self.uninit.union(&o.uninit);
+        for (i, sites) in &o.moves {
+            let mine = self.moves.entry(*i).or_default();
+            for m in sites {
+                if let Err(at) = mine.binary_search(m) {
+                    mine.insert(at, *m);
+                    changed = true;
                 }
             }
-            self.moves[i].sort_unstable();
         }
-        *self != before
+        changed
     }
 }
 
@@ -71,8 +79,10 @@ pub fn check_function(f: &Function, r: &Resolved, t: &Typed) -> (FnMoves, Vec<Di
     let n = f.blocks.len();
     let mut ins: Vec<Option<State>> = vec![None; n];
     ins[0] = Some(entry);
-    let mut work: Vec<usize> = vec![0];
-    while let Some(b) = work.pop() {
+    // Reverse postorder: joins are revisited once per change, not per path.
+    let rank = crate::util::reverse_postorder(f);
+    let mut work = std::collections::BTreeSet::from([(rank[0], 0usize)]);
+    while let Some((_, b)) = work.pop_first() {
         let mut st = ins[b].clone().unwrap();
         cx.block(b, &mut st);
         for s in f.blocks[b].term.successors() {
@@ -84,8 +94,8 @@ pub fn check_function(f: &Function, r: &Resolved, t: &Typed) -> (FnMoves, Vec<Di
                     true
                 }
             };
-            if changed && !work.contains(&s) {
-                work.push(s);
+            if changed {
+                work.insert((rank[s], s));
             }
         }
     }
@@ -102,11 +112,14 @@ pub fn check_function(f: &Function, r: &Resolved, t: &Typed) -> (FnMoves, Vec<Di
 impl Cx<'_> {
     fn entry_state(&self) -> State {
         let n = self.mp.len();
-        let mut st = State { init: vec![false; n], uninit: vec![true; n], moves: vec![Vec::new(); n] };
+        let mut st = State { init: BitSet::new(n), uninit: BitSet::new(n), moves: BTreeMap::new() };
+        for i in 0..n {
+            st.uninit.insert(i);
+        }
         for l in self.f.params() {
             for &p in self.mp.subtree(self.mp.root(l)) {
-                st.init[p.0 as usize] = true;
-                st.uninit[p.0 as usize] = false;
+                st.init.insert(p.0 as usize);
+                st.uninit.remove(p.0 as usize);
             }
         }
         st
@@ -115,18 +128,21 @@ impl Cx<'_> {
     fn set_init(&self, st: &mut State, p: MovePathId) {
         for &q in self.mp.subtree(p) {
             let i = q.0 as usize;
-            st.init[i] = true;
-            st.uninit[i] = false;
-            st.moves[i].clear();
+            st.init.insert(i);
+            st.uninit.remove(i);
+            st.moves.remove(&i);
         }
     }
 
     fn set_uninit(&self, st: &mut State, p: MovePathId, site: Option<u32>) {
         for &q in self.mp.subtree(p) {
             let i = q.0 as usize;
-            st.init[i] = false;
-            st.uninit[i] = true;
-            st.moves[i] = site.into_iter().collect();
+            st.init.remove(i);
+            st.uninit.insert(i);
+            match site {
+                Some(site) => st.moves.insert(i, vec![site]),
+                None => st.moves.remove(&i),
+            };
         }
     }
 
@@ -171,7 +187,7 @@ impl Cx<'_> {
                                     cur = parent;
                                 }
                                 proj.reverse();
-                                let state = match (st.init[i], st.uninit[i]) {
+                                let state = match (st.init.contains(i), st.uninit.contains(i)) {
                                     (true, false) => InitState::Live,
                                     (true, true) => InitState::Maybe,
                                     _ => InitState::Dead,
@@ -268,12 +284,12 @@ impl Cx<'_> {
             return;
         }
         let own = path.0 as usize;
-        if st.uninit[own] {
+        if st.uninit.contains(own) {
             self.reported.insert(path);
             self.err_use(path, st, span);
             return;
         }
-        if deep && let Some(&d) = self.mp.subtree(path)[1..].iter().find(|d| st.uninit[d.0 as usize]) {
+        if deep && let Some(&d) = self.mp.subtree(path)[1..].iter().find(|d| st.uninit.contains(d.0 as usize)) {
             self.reported.insert(path);
             self.err_partial(path, d, st, span);
         }
@@ -284,7 +300,7 @@ impl Cx<'_> {
             Lookup::Exact(p) => {
                 // Assigning a field needs its parents to exist.
                 if self.report
-                    && let Some(&a) = self.mp.ancestors(p).iter().find(|a| st.uninit[a.0 as usize])
+                    && let Some(&a) = self.mp.ancestors(p).iter().find(|a| st.uninit.contains(a.0 as usize))
                     && !self.reported.contains(&a)
                 {
                     self.reported.insert(a);
@@ -294,7 +310,7 @@ impl Cx<'_> {
             }
             Lookup::Deref(p) | Lookup::Index(p) => {
                 // `(*r).f = v` / `a[i] = v`: the reference / array must exist.
-                if self.report && st.uninit[p.0 as usize] && !self.reported.contains(&p) {
+                if self.report && st.uninit.contains(p.0 as usize) && !self.reported.contains(&p) {
                     self.reported.insert(p);
                     self.err_use(p, st, span);
                 }
@@ -304,9 +320,9 @@ impl Cx<'_> {
 
     fn drop_decision(&self, st: &State, p: MovePathId) -> DropDecision {
         let sub = self.mp.subtree(p);
-        let maybe = |q: &MovePathId| st.init[q.0 as usize] && st.uninit[q.0 as usize];
-        let def_init = |q: &MovePathId| st.init[q.0 as usize] && !st.uninit[q.0 as usize];
-        let def_uninit = |q: &MovePathId| !st.init[q.0 as usize] && st.uninit[q.0 as usize];
+        let maybe = |q: &MovePathId| st.init.contains(q.0 as usize) && st.uninit.contains(q.0 as usize);
+        let def_init = |q: &MovePathId| st.init.contains(q.0 as usize) && !st.uninit.contains(q.0 as usize);
+        let def_uninit = |q: &MovePathId| !st.init.contains(q.0 as usize) && st.uninit.contains(q.0 as usize);
         if sub.iter().all(def_init) {
             DropDecision::Static
         } else if def_uninit(&p) {
@@ -387,7 +403,7 @@ impl Cx<'_> {
 
     fn move_labels(&self, mut d: Diagnostic, path: MovePathId, st: &State, use_span: Span, verb: &str) -> Diagnostic {
         let mut in_loop = false;
-        for &m in &st.moves[path.0 as usize] {
+        for &m in st.moves(path.0 as usize) {
             let (span, _) = self.site_info[m as usize];
             if span.start >= use_span.start {
                 in_loop = true;
@@ -405,8 +421,8 @@ impl Cx<'_> {
     fn err_use(&mut self, path: MovePathId, st: &State, span: Span) {
         let (name, ty) = self.name_ty(path);
         let i = path.0 as usize;
-        let possibly = st.init[i];
-        let moved = !st.moves[i].is_empty();
+        let possibly = st.init.contains(i);
+        let moved = st.moves.contains_key(&i);
         let d = if moved {
             let msg = if possibly { format!("use of possibly moved value `{name}`") } else { format!("use of moved value `{name}`") };
             let label = if possibly { "used here, but it may have been moved" } else { "value used here after move" };
@@ -432,7 +448,7 @@ impl Cx<'_> {
     fn err_partial(&mut self, path: MovePathId, moved: MovePathId, st: &State, span: Span) {
         let name = self.name(path);
         let mname = self.name(moved);
-        let possibly = st.init[moved.0 as usize];
+        let possibly = st.init.contains(moved.0 as usize);
         let msg = if possibly { format!("use of possibly partially moved value `{name}`") } else { format!("use of partially moved value `{name}`") };
         let mut d = Diagnostic::error("E4002", "use_of_partially_moved", msg).primary(span, "the whole value is used here");
         d = self.move_labels(d, moved, st, span, &format!("`{mname}` moved"));
@@ -442,7 +458,7 @@ impl Cx<'_> {
 
     fn err_assign_into_moved(&mut self, field: MovePathId, parent: MovePathId, st: &State, span: Span) {
         let (fname, pname) = (self.name(field), self.name(parent));
-        let moved = !st.moves[parent.0 as usize].is_empty();
+        let moved = st.moves.contains_key(&(parent.0 as usize));
         let what = if moved { "has been moved" } else { "is not initialized" };
         let mut d = Diagnostic::error("E4006", "assign_into_moved", format!("cannot assign to `{fname}`: `{pname}` {what}")).primary(span, "");
         d = self.move_labels(d, parent, st, span, &format!("`{pname}` moved"));

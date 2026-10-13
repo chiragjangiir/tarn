@@ -87,7 +87,11 @@ impl Decls {
     }
 
     fn capability_inner(&self, ty: &Ty, cap: Capability, path: &mut Vec<(Ty, Capability)>, budget: &mut usize) -> bool {
-        if *budget == 0 || path.len() >= 64 || path.iter().any(|(t, c)| t == ty && *c == cap) { return false; }
+        // A repeated query is coinductive: every finite value of a recursive
+        // type is built only from the non-recursive fields, which this same
+        // traversal still checks. Exhausted depth or budget stays conservative.
+        if path.iter().any(|(t, c)| t == ty && *c == cap) { return true; }
+        if *budget == 0 || path.len() >= 64 { return false; }
         *budget -= 1;
         path.push((ty.clone(), cap));
         let answer = match ty {
@@ -149,8 +153,13 @@ mod tests {
             fields: vec![FieldDef { name: "value".into(), ty: Ty::Param(parameter), is_pub: true }], is_copy: false });
         assert!(d.capability(&Ty::Adt(symbol, vec![Ty::Str]), Capability::Transfer));
         assert!(!d.capability(&Ty::Adt(symbol, vec![Ty::Opaque]), Capability::Transfer));
+        // A repeated query holds coinductively; other fields still decide.
         d.structs.get_mut(&symbol).unwrap().fields[0].ty = Ty::Adt(symbol, vec![Ty::Param(parameter)]);
+        assert!(d.capability(&Ty::Adt(symbol, vec![Ty::Str]), Capability::Share));
+        d.structs.get_mut(&symbol).unwrap().fields.push(FieldDef { name: "raw".into(), ty: Ty::Ptr(false, Box::new(Ty::Str)), is_pub: true });
         assert!(!d.capability(&Ty::Adt(symbol, vec![Ty::Str]), Capability::Share));
+        d.structs.get_mut(&symbol).unwrap().fields.pop();
+        // A query that grows on every level never repeats: depth stays conservative.
         d.structs.get_mut(&symbol).unwrap().fields[0].ty = Ty::Adt(symbol, vec![Ty::Array(Box::new(Ty::Param(parameter)), 1)]);
         assert!(!d.capability(&Ty::Adt(symbol, vec![Ty::Str]), Capability::Transfer));
     }

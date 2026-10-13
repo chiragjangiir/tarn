@@ -1,0 +1,9 @@
+error[E3075]: `data` of type `[5000]u8` is too large to store as a native value
+ --> tests/types/fail/E3075_fixed_array_too_long.tarn:2:13
+  |
+2 | fn checksum(data [5000]u8) u8 {
+  |             ^^^^^^^^^^^^^ fixed arrays exceed v0 limit of 4096 elements
+  |
+  = note: values are limited to 64 KiB, fixed arrays to 4096 elements and nesting to 64 levels
+  = help: keep large data on the heap, for example in a `Vec<T>`, and pass it by reference
+

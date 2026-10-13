@@ -1,0 +1,9 @@
+error[E3075]: `big` of type `Big` is too large to store as a native value
+ --> tests/types/fail/E3075_value_too_large.tarn:7:10
+  |
+7 | fn first(big Big) u64 {
+  |          ^^^^^^^ native value size exceeds v0 limit of 64 KiB
+  |
+  = note: values are limited to 64 KiB, fixed arrays to 4096 elements and nesting to 64 levels
+  = help: keep large data on the heap, for example in a `Vec<T>`, and pass it by reference
+

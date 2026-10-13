@@ -99,11 +99,17 @@ fn build_entry(p: &post_drop::Program, t: &Typed, output: &Path, libraries: &[St
     let publication = Scratch::in_directory(parent)?;
     let executable = publication.0.join("program");
     std::fs::write(&object, bytes).map_err(io_error)?;
-    std::fs::write(&runtime, RUNTIME).map_err(io_error)?;
+    let runtime = match cached_runtime(&scratch) {
+        Some(cached) => cached,
+        None => {
+            std::fs::write(&runtime, RUNTIME).map_err(io_error)?;
+            runtime
+        }
+    };
     // Untranslated linker diagnostics keep linker_message deterministic.
     let linked = Command::new("cc")
         .env("LC_ALL", "C")
-        .args(["-std=c11", "-O2", "-fno-strict-aliasing", "-no-pie", "-pthread"])
+        .args(RUNTIME_FLAGS)
         .arg(&object)
         .arg(&runtime)
         .args(libraries.iter().map(|l| format!("-l{l}")))
@@ -138,6 +144,50 @@ fn linker_message(stderr: &str, libraries: &[String]) -> String {
         return format!("native linker found no definition for extern \"C\" {}; {hint}", symbols.iter().map(|s| format!("`{s}`")).collect::<Vec<_>>().join(", "));
     }
     format!("native linker failed: {stderr}")
+}
+/// Flags for the embedded runtime and the final link, shared by both paths.
+const RUNTIME_FLAGS: [&str; 5] = ["-std=c11", "-O2", "-fno-strict-aliasing", "-no-pie", "-pthread"];
+
+/// The embedded C runtime never changes for a given compiler, so its object
+/// is compiled once per (runtime source, flags, C compiler identity) and kept
+/// in `~/.tarn/artifacts/runtime/`. Publication is an atomic rename, so
+/// concurrent builds never observe a partial object. Any failure falls back
+/// to compiling the runtime inside this build; `TARN_NO_RUNTIME_CACHE` opts out.
+fn cached_runtime(scratch: &Scratch) -> Option<PathBuf> {
+    if std::env::var_os("TARN_NO_RUNTIME_CACHE").is_some() {
+        return None;
+    }
+    let identity = |arg: &str| Command::new("cc").env("LC_ALL", "C").arg(arg).output().ok().filter(|o| o.status.success()).map(|o| o.stdout);
+    let (version, machine) = (identity("--version")?, identity("-dumpmachine")?);
+    let key = {
+        use std::hash::{Hash, Hasher};
+        let half = |seed: u8| {
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            (seed, RUNTIME, RUNTIME_FLAGS, &version, &machine).hash(&mut h);
+            h.finish()
+        };
+        format!("{:016x}{:016x}", half(0), half(1))
+    };
+    let directory = PathBuf::from(std::env::var_os("HOME")?).join(".tarn/artifacts/runtime");
+    let cached = directory.join(format!("{key}.o"));
+    if cached.is_file() {
+        return Some(cached);
+    }
+    std::fs::create_dir_all(&directory).ok()?;
+    let source = scratch.0.join("runtime.c");
+    std::fs::write(&source, RUNTIME).ok()?;
+    let compiled = scratch.0.join("runtime.o");
+    let status = Command::new("cc").env("LC_ALL", "C").args(RUNTIME_FLAGS).arg("-c").arg(&source).arg("-o").arg(&compiled).status().ok()?;
+    if !status.success() {
+        return None;
+    }
+    let pending = directory.join(format!(".{key}.{}.tmp", std::process::id()));
+    std::fs::copy(&compiled, &pending).ok()?;
+    if std::fs::rename(&pending, &cached).is_err() {
+        let _ = std::fs::remove_file(&pending);
+        return Some(compiled);
+    }
+    Some(cached)
 }
 fn io_error(e: std::io::Error) -> Error {
     Error { message: format!("native build I/O: {e}") }

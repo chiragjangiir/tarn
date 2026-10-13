@@ -44,25 +44,62 @@ pub fn prove_arithmetic(p: &mut Program) {
     if std::env::var_os("TARN_NO_RANGE_PROOFS").is_some() {
         return;
     }
-    for f in &mut p.functions {
-        prove_function(f);
+    // Each function is proven independently; chunks are shared out on all cores.
+    use std::sync::Mutex;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let chunks: Vec<Mutex<&mut [Function]>> = p.functions.chunks_mut(16).map(Mutex::new).collect();
+    let workers = std::thread::available_parallelism().map_or(1, |n| n.get()).min(chunks.len());
+    if workers <= 1 {
+        for chunk in chunks {
+            chunk.into_inner().unwrap().iter_mut().for_each(prove_function);
+        }
+        return;
     }
+    let next = AtomicUsize::new(0);
+    std::thread::scope(|scope| {
+        for _ in 0..workers {
+            scope.spawn(|| {
+                while let Some(chunk) = chunks.get(next.fetch_add(1, Ordering::Relaxed)) {
+                    chunk.lock().unwrap().iter_mut().for_each(prove_function);
+                }
+            });
+        }
+    });
 }
 
 struct Analysis {
     tracked: Vec<Option<IntTy>>,
 }
 
-type State = Vec<Option<Range>>;
+/// Ranges that differ from their type's bounds; an absent tracked local is
+/// unconstrained. Sparse, so long functions keep small per-block states.
+#[derive(Clone, Debug, Default, PartialEq)]
+struct State(std::collections::BTreeMap<usize, Range>);
 
 impl Analysis {
     fn top(&self, l: usize) -> Option<Range> {
         self.tracked[l].map(bounds)
     }
+    fn get(&self, s: &State, l: usize) -> Option<Range> {
+        self.tracked[l]?;
+        s.0.get(&l).copied().or_else(|| self.top(l))
+    }
+    /// `None` resets a tracked local to its type's bounds.
+    fn put(&self, s: &mut State, l: usize, value: Option<Range>) {
+        let Some(top) = self.top(l) else { return };
+        match value {
+            Some(v) if v != top => {
+                s.0.insert(l, v);
+            }
+            _ => {
+                s.0.remove(&l);
+            }
+        }
+    }
     fn operand(&self, s: &State, o: &Operand) -> Option<Range> {
         match o {
             Operand::Const(Const::Int(v, _)) => Some((*v, *v)),
-            Operand::Copy(p) | Operand::Move(p) if p.proj.is_empty() && self.tracked[p.local.0 as usize].is_some() => s[p.local.0 as usize],
+            Operand::Copy(p) | Operand::Move(p) if p.proj.is_empty() && self.tracked[p.local.0 as usize].is_some() => self.get(s, p.local.0 as usize),
             _ => None,
         }
     }
@@ -101,14 +138,15 @@ impl Analysis {
             Rvalue::Binary(op, a, b) => self.arithmetic(s, *op, a, b, ty).0,
             _ => None,
         };
-        s[l] = value.or_else(|| self.top(l));
+        self.put(s, l, value);
     }
 }
 
-fn refine(s: &mut State, l: usize, lo: Option<i128>, hi: Option<i128>) {
-    if let Some((cl, ch)) = s[l] {
+fn refine(s: &mut State, an: &Analysis, l: usize, lo: Option<i128>, hi: Option<i128>) {
+    if let Some((cl, ch)) = an.get(s, l) {
         let (nl, nh) = (lo.map_or(cl, |v| cl.max(v)), hi.map_or(ch, |v| ch.min(v)));
-        s[l] = Some((nl, nh));
+        // An empty interval means the edge is unreachable; keep it conservative.
+        an.put(s, l, if nl > nh { None } else { Some((nl, nh)) });
     }
 }
 
@@ -143,14 +181,17 @@ fn prove_function(f: &mut Function) {
         tracked: (0..n).map(|l| if escaped.contains(&l) || l == 0 { None } else { int_ty(f, LocalId(l as u32)) }).collect(),
     };
     // Parameters and every other local start unconstrained.
-    let entry_state: State = (0..n).map(|l| analysis.top(l)).collect();
+    let entry_state = State::default();
+    let block_local = block_local_temporaries(f, &analysis);
     let blocks = f.blocks.len();
-    let heads = loop_heads(f);
+    let (heads, rank) = loop_heads(f);
     let mut input: Vec<Option<State>> = vec![None; blocks];
     let mut visits = vec![0u32; blocks];
     input[0] = Some(entry_state);
-    let mut work = vec![0usize];
-    while let Some(b) = work.pop() {
+    // Reverse postorder: a block runs after all its forward predecessors,
+    // so each join is visited once per change instead of once per path.
+    let mut work = std::collections::BTreeSet::from([(rank[0], 0usize)]);
+    while let Some((_, b)) = work.pop_first() {
         let Some(mut s) = input[b].clone() else { continue };
         let block = &f.blocks[b];
         for st in &block.stmts {
@@ -182,8 +223,8 @@ fn prove_function(f: &mut Function) {
             Terminator::Call { dest, next, .. } => {
                 let mut t = s.clone();
                 let l = dest.local.0 as usize;
-                if dest.proj.is_empty() && analysis.tracked[l].is_some() {
-                    t[l] = analysis.top(l);
+                if dest.proj.is_empty() {
+                    analysis.put(&mut t, l, None);
                 }
                 if let Some(nb) = next {
                     edges.push((nb.0 as usize, t));
@@ -196,6 +237,11 @@ fn prove_function(f: &mut Function) {
             }
         }
         for (target, state) in edges {
+            // Temporaries read only inside their own block are dead on exit.
+            let mut state = state;
+            for l in &block_local[b] {
+                state.0.remove(l);
+            }
             let merged = match &input[target] {
                 None => state,
                 Some(old) => {
@@ -203,22 +249,20 @@ fn prove_function(f: &mut Function) {
                     // Widen only where a back edge enters (loop heads), so
                     // branch refinements inside a loop body are kept.
                     let widen = heads[target] && visits[target] > 3;
-                    (0..n)
-                        .map(|l| match (old[l], state[l]) {
-                            (Some((ol, oh)), Some((nl, nh))) => {
-                                let (tl, th) = analysis.top(l).unwrap_or((ol.min(nl), oh.max(nh)));
-                                let lo = if nl < ol { if widen { tl } else { nl } } else { ol };
-                                let hi = if nh > oh { if widen { th } else { nh } } else { oh };
-                                Some((lo, hi))
-                            }
-                            _ => analysis.top(l),
-                        })
-                        .collect()
+                    let mut merged = State::default();
+                    for &l in old.0.keys().chain(state.0.keys()) {
+                        let (Some((ol, oh)), Some((nl, nh))) = (analysis.get(old, l), analysis.get(&state, l)) else { continue };
+                        let (tl, th) = analysis.top(l).unwrap_or((ol.min(nl), oh.max(nh)));
+                        let lo = if nl < ol { if widen { tl } else { nl } } else { ol };
+                        let hi = if nh > oh { if widen { th } else { nh } } else { oh };
+                        analysis.put(&mut merged, l, Some((lo, hi)));
+                    }
+                    merged
                 }
             };
             if input[target].as_ref() != Some(&merged) {
                 input[target] = Some(merged);
-                work.push(target);
+                work.insert((rank[target], target));
             }
         }
     }
@@ -246,10 +290,12 @@ fn prove_function(f: &mut Function) {
     }
 }
 
-/// Targets of back edges in a depth-first walk from the entry.
-fn loop_heads(f: &Function) -> Vec<bool> {
+/// Targets of back edges in a depth-first walk from the entry, and each
+/// block's reverse-postorder rank (unreached blocks rank last).
+fn loop_heads(f: &Function) -> (Vec<bool>, Vec<usize>) {
     let n = f.blocks.len();
     let (mut heads, mut state) = (vec![false; n], vec![0u8; n]);
+    let mut postorder = Vec::with_capacity(n);
     let mut stack = vec![(0usize, 0usize)];
     state[0] = 1;
     while let Some((b, i)) = stack.pop() {
@@ -267,6 +313,7 @@ fn loop_heads(f: &Function) -> Vec<bool> {
             }
         } else {
             state[b] = 2;
+            postorder.push(b);
         }
     }
     // A block not proven acyclic is treated as a head (never unbounded).
@@ -275,7 +322,11 @@ fn loop_heads(f: &Function) -> Vec<bool> {
             heads[b] = true;
         }
     }
-    heads
+    let mut rank: Vec<usize> = (n..2 * n).collect();
+    for (i, b) in postorder.iter().rev().enumerate() {
+        rank[*b] = i;
+    }
+    (heads, rank)
 }
 
 fn int_ty_of_place(a: &Analysis, p: &Place) -> Option<IntTy> {
@@ -318,15 +369,110 @@ fn negate(op: BinOp) -> BinOp {
 fn apply(s: &mut State, an: &Analysis, op: BinOp, a: usize, bound: &Operand) {
     let Some((bl, bh)) = an.operand(s, bound) else { return };
     match op {
-        BinOp::Lt => refine(s, a, None, Some(bh - 1)),
-        BinOp::Le => refine(s, a, None, Some(bh)),
-        BinOp::Gt => refine(s, a, Some(bl + 1), None),
-        _ => refine(s, a, Some(bl), None),
+        BinOp::Lt => refine(s, an, a, None, Some(bh - 1)),
+        BinOp::Le => refine(s, an, a, None, Some(bh)),
+        BinOp::Gt => refine(s, an, a, Some(bl + 1), None),
+        _ => refine(s, an, a, Some(bl), None),
     }
-    // An empty interval means the edge is unreachable; keep it conservative.
-    if let Some((lo, hi)) = s[a]
-        && lo > hi
-    {
-        s[a] = an.top(a);
+}
+
+/// Per block, the tracked locals whose every mention is in that block and
+/// starts with a plain assignment: no other block, nor a later visit of the
+/// same block, can observe their value, so they leave the state at its exit.
+fn block_local_temporaries(f: &Function, a: &Analysis) -> Vec<Vec<usize>> {
+    const SHARED: usize = usize::MAX;
+    let n = f.locals.len();
+    // Defining block, or SHARED once a local is mentioned elsewhere or read first.
+    let mut home: Vec<Option<usize>> = vec![None; n];
+    let mut mention = |l: usize, b: usize, write: bool| {
+        home[l] = match home[l] {
+            None if write => Some(b),
+            Some(h) if h == b => Some(h),
+            _ => Some(SHARED),
+        };
+    };
+    for (b, block) in f.blocks.iter().enumerate() {
+        for st in &block.stmts {
+            match &st.kind {
+                StatementKind::Assign(p, rv) => {
+                    let mut reads = Vec::new();
+                    rvalue_locals(rv, &mut reads);
+                    place_reads(p, &mut reads);
+                    for l in reads {
+                        mention(l, b, false);
+                    }
+                    mention(p.local.0 as usize, b, p.proj.is_empty());
+                }
+                StatementKind::Drop(p) => mention(p.local.0 as usize, b, false),
+                StatementKind::StorageLive(_) | StatementKind::StorageDead(_) => {}
+            }
+        }
+        let mut reads = Vec::new();
+        match &block.term {
+            Terminator::Switch { discr, .. } => operand_locals(discr, &mut reads),
+            Terminator::Call { callee, args, dest, .. } => {
+                if let Callee::Value(o) = callee {
+                    operand_locals(o, &mut reads);
+                }
+                args.iter().for_each(|o| operand_locals(o, &mut reads));
+                place_reads(dest, &mut reads);
+                reads.push(dest.local.0 as usize);
+            }
+            _ => {}
+        }
+        for l in reads {
+            mention(l, b, false);
+        }
+    }
+    let mut out = vec![Vec::new(); f.blocks.len()];
+    for (l, h) in home.into_iter().enumerate() {
+        if let Some(b) = h
+            && b != SHARED
+            && a.tracked[l].is_some()
+        {
+            out[b].push(l);
+        }
+    }
+    out
+}
+
+fn place_reads(p: &Place, out: &mut Vec<usize>) {
+    for pr in &p.proj {
+        if let Proj::Index(l) = pr {
+            out.push(l.0 as usize);
+        }
+    }
+}
+
+fn operand_locals(o: &Operand, out: &mut Vec<usize>) {
+    if let Operand::Copy(p) | Operand::Move(p) = o {
+        out.push(p.local.0 as usize);
+        place_reads(p, out);
+    }
+}
+
+fn rvalue_locals(rv: &Rvalue, out: &mut Vec<usize>) {
+    match rv {
+        Rvalue::Use(o) | Rvalue::Unary(_, o) | Rvalue::Cast(o, _) | Rvalue::Coerce(_, o, _) => operand_locals(o, out),
+        Rvalue::Binary(_, x, y) => {
+            operand_locals(x, out);
+            operand_locals(y, out);
+        }
+        Rvalue::Aggregate(kind, os) => {
+            os.iter().for_each(|o| operand_locals(o, out));
+            if let Aggregate::Closure(_, Some(p)) = kind {
+                out.push(p.local.0 as usize);
+                place_reads(p, out);
+            }
+        }
+        Rvalue::Ref(_, p) | Rvalue::Discriminant(p) | Rvalue::Len(p) => {
+            out.push(p.local.0 as usize);
+            place_reads(p, out);
+        }
+        Rvalue::SliceRef { base, start, end, .. } => {
+            out.push(base.local.0 as usize);
+            place_reads(base, out);
+            start.iter().chain(end).for_each(|o| operand_locals(o, out));
+        }
     }
 }

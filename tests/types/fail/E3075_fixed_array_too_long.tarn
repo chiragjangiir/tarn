@@ -1,0 +1,6 @@
+// Fixed arrays are bounded at 4096 elements.
+fn checksum(data [5000]u8) u8 {
+    return data[0]
+}
+fn main() {
+}

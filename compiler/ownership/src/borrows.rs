@@ -17,6 +17,7 @@
 //! provenance summaries are inferred bottom-up (fixpoint for recursion).
 
 use crate::util::{BitSet, may_hold_refs, place_name};
+use std::sync::RwLock;
 use std::collections::{HashMap, HashSet, VecDeque};
 use tarn_diagnostics::{Diagnostic, Span};
 use tarn_ir::{BlockId, Callee, Function, FunctionId, LocalId, Operand, Place, Program, Proj, RETURN, Rvalue, StatementKind, Terminator};
@@ -107,7 +108,8 @@ pub(crate) fn elide(sig: &FnSig) -> Elided {
 struct Fx<'a> {
     f: &'a Function,
     t: &'a Typed,
-    prov: &'a HashMap<FunctionId, Provenance>,
+    /// Shared provenance table; the fixpoint updates it between analyses.
+    prov: &'a RwLock<HashMap<FunctionId, Provenance>>,
     /// `Execution.spawn`, whose computation may borrow only its Execution.
     spawn_fn: Option<FunctionId>,
     loans: Vec<Loan>,
@@ -122,7 +124,38 @@ struct Fx<'a> {
     reported: HashSet<usize>,
 }
 
-type Holds = Vec<BitSet>;
+/// Loans each local may hold. Sparse: only locals currently holding a loan
+/// are stored, so states of long functions stay small to clone and join.
+#[derive(Clone, Debug, Default, PartialEq)]
+struct Holds(std::collections::BTreeMap<usize, BitSet>);
+
+static NO_LOANS: BitSet = BitSet::EMPTY;
+
+impl Holds {
+    fn get(&self, l: usize) -> &BitSet {
+        self.0.get(&l).unwrap_or(&NO_LOANS)
+    }
+    fn set(&mut self, l: usize, loans: BitSet) {
+        if loans.is_empty() {
+            self.0.remove(&l);
+        } else {
+            self.0.insert(l, loans);
+        }
+    }
+    fn clear(&mut self, l: usize) {
+        self.0.remove(&l);
+    }
+    fn add(&mut self, l: usize, loans: &BitSet) -> bool {
+        !loans.is_empty() && self.0.entry(l).or_default().union(loans)
+    }
+    fn join(&mut self, other: &Holds) -> bool {
+        let mut changed = false;
+        for (l, loans) in &other.0 {
+            changed |= self.add(*l, loans);
+        }
+        changed
+    }
+}
 
 fn operand_place(o: &Operand) -> Option<&Place> {
     match o {
@@ -132,7 +165,7 @@ fn operand_place(o: &Operand) -> Option<&Place> {
 }
 
 impl<'a> Fx<'a> {
-    fn new(f: &'a Function, t: &'a Typed, prov: &'a HashMap<FunctionId, Provenance>) -> Self {
+    fn new(f: &'a Function, t: &'a Typed, prov: &'a RwLock<HashMap<FunctionId, Provenance>>) -> Self {
         let mut fx =
             Fx { f, t, prov, spawn_fn: None, loans: Vec::new(), loan_at: HashMap::new(), nl: f.locals.len(), live: Vec::new(), live_out: Vec::new(), diags: Vec::new(), reported: HashSet::new() };
         // Placeholder loans: one per reference-holding parameter.
@@ -304,10 +337,10 @@ impl<'a> Fx<'a> {
     // ------------------------------------------------------------ loan flow
 
     fn entry_holds(&self) -> Holds {
-        let mut h = vec![BitSet::new(self.loans.len()); self.nl];
+        let mut h = Holds::default();
         for (i, l) in self.loans.iter().enumerate() {
             if l.param.is_some() {
-                h[l.holder.0 as usize].insert(i);
+                h.0.entry(l.holder.0 as usize).or_default().insert(i);
             }
         }
         h
@@ -315,7 +348,7 @@ impl<'a> Fx<'a> {
 
     fn holds_of(&self, h: &Holds, o: &Operand, into: &mut BitSet) {
         if let Some(p) = operand_place(o) {
-            into.union(&h[p.local.0 as usize]);
+            into.union(h.get(p.local.0 as usize));
         }
     }
 
@@ -334,7 +367,7 @@ impl<'a> Fx<'a> {
                 }
                 // A reference into `p` also depends on what `p` borrows
                 // (reborrows through `*r` keep `r`'s loans alive).
-                inflow.union(&h[p.local.0 as usize]);
+                inflow.union(h.get(p.local.0 as usize));
             }
         }
         inflow
@@ -343,9 +376,9 @@ impl<'a> Fx<'a> {
     fn write_holds(&self, h: &mut Holds, dest: &Place, inflow: BitSet) {
         let d = dest.local.0 as usize;
         if dest.proj.is_empty() {
-            h[d] = if self.t.decls.may_contain_references(&self.f.local(dest.local).ty) || self.t.decls.contains_task(&self.f.local(dest.local).ty) { inflow } else { BitSet::new(self.loans.len()) };
+            h.set(d, if self.t.decls.may_contain_references(&self.f.local(dest.local).ty) || self.t.decls.contains_task(&self.f.local(dest.local).ty) { inflow } else { BitSet::EMPTY });
         } else if !dest.proj.contains(&Proj::Deref) {
-            h[d].union(&inflow);
+            h.add(d, &inflow);
         }
     }
 
@@ -358,7 +391,7 @@ impl<'a> Fx<'a> {
             return inflow;
         }
         let positions: Option<Provenance> = match callee {
-            Callee::Fn(id, _) => self.prov.get(id).cloned(),
+            Callee::Fn(id, _) => self.prov.read().unwrap().get(id).cloned(),
             Callee::Virtual { method, .. } => self.t.decls.fns.get(method).map(|s| match elide(s) {
                 Elided::Prov(p) => p,
                 _ => Vec::new(),
@@ -414,7 +447,7 @@ impl<'a> Fx<'a> {
     fn consume_resource_operand(&self, h: &mut Holds, operand: &Operand) {
         if let Operand::Move(place) = operand
             && place.proj.is_empty() && (self.t.decls.contains_task(&self.f.local(place.local).ty) || self.t.decls.contains_loan_resource(&self.f.local(place.local).ty)) {
-            h[place.local.0 as usize] = BitSet::new(self.loans.len());
+            h.clear(place.local.0 as usize);
         }
     }
 
@@ -434,10 +467,10 @@ impl<'a> Fx<'a> {
                     }
                     self.write_holds(h, dest, inflow);
                 }
-                StatementKind::StorageLive(l) | StatementKind::StorageDead(l) => h[l.0 as usize] = BitSet::new(self.loans.len()),
+                StatementKind::StorageLive(l) | StatementKind::StorageDead(l) => h.clear(l.0 as usize),
                 StatementKind::Drop(place) => {
                     if place.proj.is_empty() && (self.t.decls.contains_task(&self.f.local(place.local).ty) || self.t.decls.contains_loan_resource(&self.f.local(place.local).ty)) {
-                        h[place.local.0 as usize] = BitSet::new(self.loans.len());
+                        h.clear(place.local.0 as usize);
                     }
                 }
             }
@@ -491,7 +524,7 @@ impl<'a> Fx<'a> {
                     incoming.remove(l);
                 }
             }
-            h[target.0 as usize].union(&incoming);
+            h.add(target.0 as usize, &incoming);
         }
     }
 
@@ -500,27 +533,23 @@ impl<'a> Fx<'a> {
         let n = self.f.blocks.len();
         let mut ins: Vec<Option<Holds>> = vec![None; n];
         ins[0] = Some(self.entry_holds());
-        let mut work: VecDeque<usize> = VecDeque::from([0]);
-        while let Some(b) = work.pop_front() {
+        // Reverse postorder: joins are revisited once per change, not per path.
+        let rank = crate::util::reverse_postorder(self.f);
+        let mut work = std::collections::BTreeSet::from([(rank[0], 0usize)]);
+        while let Some((_, b)) = work.pop_first() {
             let mut h = ins[b].clone().unwrap();
             self.block_forward(b, &mut h, false);
             for s in self.f.blocks[b].term.successors() {
                 let s = s.0 as usize;
                 let changed = match &mut ins[s] {
-                    Some(cur) => {
-                        let mut ch = false;
-                        for (c, x) in cur.iter_mut().zip(&h) {
-                            ch |= c.union(x);
-                        }
-                        ch
-                    }
+                    Some(cur) => cur.join(&h),
                     slot @ None => {
                         *slot = Some(h.clone());
                         true
                     }
                 };
-                if changed && !work.contains(&s) {
-                    work.push_back(s);
+                if changed {
+                    work.insert((rank[s], s));
                 }
             }
         }
@@ -537,7 +566,7 @@ impl<'a> Fx<'a> {
             }
             let Some(mut h) = ins[b].clone() else { continue };
             self.block_forward(b, &mut h, false);
-            for l in h[RETURN.0 as usize].iter() {
+            for l in h.get(RETURN.0 as usize).iter() {
                 if let Some(i) = self.loans[l].param
                     && !out.contains(&i)
                 {
@@ -554,8 +583,8 @@ impl<'a> Fx<'a> {
     /// Real loans held by locals in `live`, with the locals holding each.
     fn active(&self, h: &Holds, live: &BitSet) -> Vec<(usize, Vec<LocalId>)> {
         let mut out: HashMap<usize, Vec<LocalId>> = HashMap::new();
-        for l in live.iter() {
-            for loan in h[l].iter() {
+        for (&l, loans) in h.0.iter().filter(|(l, _)| live.contains(**l)) {
+            for loan in loans.iter() {
                 if self.loans[loan].param.is_none() {
                     out.entry(loan).or_default().push(LocalId(l as u32));
                 }
@@ -751,7 +780,7 @@ impl<'a> Fx<'a> {
                 }
                 if !matches!(callee, Callee::Intrinsic(name) if name == "Task.join") && !matches!(callee, Callee::TaskSpawn { .. }) {
                     if args.iter().filter_map(operand_place).any(|p| self.t.decls.contains_task(&self.f.local(p.local).ty)
-                        && h[p.local.0 as usize].iter().any(|l| self.f.local(self.loans[l].place.local).kind == tarn_ir::LocalKind::TaskScopeWitness)) {
+                        && h.get(p.local.0 as usize).iter().any(|l| self.f.local(self.loans[l].place.local).kind == tarn_ir::LocalKind::TaskScopeWitness)) {
                         self.diags.push(Diagnostic::error("E4208", "scoped_task_escape", "a scoped task handle must complete inside its creating scope")
                             .primary(tspan, "join the handle locally before passing its result"));
                     }
@@ -772,11 +801,11 @@ impl<'a> Fx<'a> {
     /// through a reference parameter (`*p…`) or the parameters' own placeholders.
     fn check_return(&mut self, h: &Holds, span: Span) {
         let storage_loan = |ln: &Loan| self.f.local(ln.place.local).name.as_deref() == Some("closure environment");
-        let capture_error = h[RETURN.0 as usize].iter().any(|l| {
+        let capture_error = h.get(RETURN.0 as usize).iter().any(|l| {
             let ln = &self.loans[l];
             ln.param.is_none() && !ln.place.proj.contains(&Proj::Deref) && !storage_loan(ln)
         });
-        for l in h[RETURN.0 as usize].iter() {
+        for l in h.get(RETURN.0 as usize).iter() {
             let ln = &self.loans[l];
             if ln.param.is_some() || ln.place.proj.contains(&Proj::Deref) || !self.reported.insert(l) {
                 continue;
@@ -960,27 +989,77 @@ pub fn check_borrows(p: &Program, r: &Resolved, t: &Typed, skip: &HashSet<Functi
     }
     check_declarations(r, t, &mut diags);
     // 2. Bodies: provenance summaries to a fixpoint (recursion), then checking.
-    for _ in 0..32 {
-        let mut changed = false;
-        for f in p.functions.iter().filter(|f| !f.blocks.is_empty()) {
-            let mut fx = Fx::new(f, t, &prov);
-            fx.spawn_fn = t.decls.exec_spawn.and_then(|s| p.by_symbol.get(&s)).copied();
-            let ins = fx.flow();
-            let s = fx.summary(&ins);
-            if prov.get(&f.id) != Some(&s) {
-                prov.insert(f.id, s);
-                changed = true;
+    // Each function's loans and liveness are built once. A function is
+    // re-analyzed only when a direct callee's summary changes; summaries only
+    // grow, so this reaches the same least fixpoint as repeated full rounds.
+    let prov = RwLock::new(prov);
+    let spawn_fn = t.decls.exec_spawn.and_then(|s| p.by_symbol.get(&s)).copied();
+    let bodies: Vec<&Function> = p.functions.iter().filter(|f| !f.blocks.is_empty()).collect();
+    // First round on all cores against the initial table: equivalent to the
+    // first worklist pass, since summaries only grow and changes re-queue.
+    let first = crate::util::par_map(bodies.clone(), |f| {
+        let mut fx = Fx::new(f, t, &prov);
+        fx.spawn_fn = spawn_fn;
+        let ins = fx.flow();
+        let summary = fx.summary(&ins);
+        (fx, ins, summary)
+    });
+    let mut fxs: Vec<Fx> = Vec::with_capacity(bodies.len());
+    let mut flows: Vec<Vec<Option<Holds>>> = Vec::with_capacity(bodies.len());
+    let mut summaries = Vec::with_capacity(bodies.len());
+    for (fx, ins, summary) in first {
+        fxs.push(fx);
+        flows.push(ins);
+        summaries.push(summary);
+    }
+    let index: HashMap<FunctionId, usize> = bodies.iter().enumerate().map(|(i, f)| (f.id, i)).collect();
+    let mut callers: Vec<Vec<usize>> = vec![Vec::new(); bodies.len()];
+    for (i, f) in bodies.iter().enumerate() {
+        for b in &f.blocks {
+            if let Terminator::Call { callee: Callee::Fn(id, _), .. } = &b.term
+                && let Some(&callee) = index.get(id)
+                && !callers[callee].contains(&i)
+            {
+                callers[callee].push(i);
             }
         }
-        if !changed {
+    }
+    let mut queued = vec![false; bodies.len()];
+    let mut work = std::collections::BTreeSet::new();
+    for (i, summary) in summaries.into_iter().enumerate() {
+        if prov.read().unwrap().get(&bodies[i].id) != Some(&summary) {
+            prov.write().unwrap().insert(bodies[i].id, summary);
+            for &c in &callers[i] {
+                if !queued[c] {
+                    queued[c] = true;
+                    work.insert(c);
+                }
+            }
+        }
+    }
+    // Same bound as the former 32 full rounds.
+    let mut budget = 32 * bodies.len().max(1);
+    while let Some(i) = work.pop_first() {
+        queued[i] = false;
+        let ins = fxs[i].flow();
+        let s = fxs[i].summary(&ins);
+        flows[i] = ins;
+        if prov.read().unwrap().get(&bodies[i].id) != Some(&s) {
+            prov.write().unwrap().insert(bodies[i].id, s);
+            for &c in &callers[i] {
+                if !queued[c] {
+                    queued[c] = true;
+                    work.insert(c);
+                }
+            }
+        }
+        budget -= 1;
+        if budget == 0 {
             break;
         }
     }
-    let mut results = BorrowResults::default();
-    for f in p.functions.iter().filter(|f| !f.blocks.is_empty()) {
-        let mut fx = Fx::new(f, t, &prov);
-        fx.spawn_fn = t.decls.exec_spawn.and_then(|s| p.by_symbol.get(&s)).copied();
-        let ins = fx.flow();
+    // Checking reads the final table only; functions are independent.
+    let checked = crate::util::par_map(bodies.iter().zip(fxs).zip(flows).collect(), |((f, mut fx), ins)| {
         if !skip.contains(&f.id) {
             for (b, h) in ins.iter().enumerate() {
                 if let Some(mut h) = h.clone() {
@@ -988,11 +1067,15 @@ pub fn check_borrows(p: &Program, r: &Resolved, t: &Typed, skip: &HashSet<Functi
                 }
             }
         }
+        (f, fx)
+    });
+    let mut results = BorrowResults::default();
+    for (f, mut fx) in checked {
         diags.append(&mut fx.diags);
-        let provenance = prov.get(&f.id).cloned().unwrap_or_default();
+        let provenance = prov.read().unwrap().get(&f.id).cloned().unwrap_or_default();
         results.functions.insert(f.id, FnBorrows { loans: fx.loans, provenance });
     }
-    check_impl_provenance(p, r, t, &prov, &mut diags);
+    check_impl_provenance(p, r, t, &prov.read().unwrap(), &mut diags);
     (results, diags)
 }
 
@@ -1043,3 +1126,4 @@ fn check_impl_provenance(p: &Program, r: &Resolved, t: &Typed, prov: &HashMap<Fu
         }
     }
 }
+
