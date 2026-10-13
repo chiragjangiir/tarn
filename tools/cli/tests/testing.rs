@@ -9,14 +9,15 @@ fn reports_all_outcomes_filters_and_private_module_tests() {
     std::fs::write(&entry, "fn main() { panic(\"application main must not run\") }\nfn test_ok() {}\nfn test_err() Result<void, string> { return Err(\"error value\") }\nfn test_panic() { panic(\"panic value\") }\nfn test_hang() { for {} }\n").unwrap();
     std::fs::write(dir.join("side_test.tarn"), "fn private_value() i32 { return 42 }\nfn test_private() { if private_value() != 42 { panic(\"wrong\") } }\n").unwrap();
     let cli = env!("CARGO_BIN_EXE_tarn");
-    // Count the real native link invocations: all selected tests share one build.
+    // Count the real native link invocations: all selected tests share one
+    // build. A one-time `cc -c` of the cached runtime object is not a link.
     use std::os::unix::fs::PermissionsExt;
     let count = dir.join("link-count");
     let wrapper = dir.join("cc");
     std::fs::write(
         &wrapper,
         format!(
-            "#!/bin/sh\nprintf x >> '{}'\nexec /usr/bin/cc \"$@\"\n",
+            "#!/bin/sh\ncase \" $* \" in *' -c '*) ;; *) printf x >> '{}' ;; esac\nexec /usr/bin/cc \"$@\"\n",
             count.display()
         ),
     )

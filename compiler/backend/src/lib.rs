@@ -157,13 +157,17 @@ fn cached_runtime(scratch: &Scratch) -> Option<PathBuf> {
     if std::env::var_os("TARN_NO_RUNTIME_CACHE").is_some() {
         return None;
     }
-    let identity = |arg: &str| Command::new("cc").env("LC_ALL", "C").arg(arg).output().ok().filter(|o| o.status.success()).map(|o| o.stdout);
-    let (version, machine) = (identity("--version")?, identity("-dumpmachine")?);
+    // The C compiler is identified by its resolved executable (path, size and
+    // modification time) without running it: an upgrade changes the key.
+    let compiler = std::env::var_os("PATH").and_then(|path| std::env::split_paths(&path).map(|d| d.join("cc")).find(|c| c.is_file()))?;
+    let compiler = std::fs::canonicalize(compiler).ok()?;
+    let metadata = std::fs::metadata(&compiler).ok()?;
+    let modified = metadata.modified().ok()?.duration_since(std::time::UNIX_EPOCH).ok()?;
     let key = {
         use std::hash::{Hash, Hasher};
         let half = |seed: u8| {
             let mut h = std::collections::hash_map::DefaultHasher::new();
-            (seed, RUNTIME, RUNTIME_FLAGS, &version, &machine).hash(&mut h);
+            (seed, RUNTIME, RUNTIME_FLAGS, &compiler, metadata.len(), modified).hash(&mut h);
             h.finish()
         };
         format!("{:016x}{:016x}", half(0), half(1))
