@@ -16,12 +16,14 @@
 //! `(*r)[i]`) are first-class because borrow checking reasons about them.
 
 pub mod async_frame;
+mod instantiation;
 mod lower;
 pub mod post_drop;
 mod ranges;
 mod pretty;
 mod verify;
 
+pub use instantiation::check_instantiation_cycles;
 pub use lower::lower_program;
 pub use ranges::prove_arithmetic;
 pub use pretty::{print_function, print_program, print_program_annotated};

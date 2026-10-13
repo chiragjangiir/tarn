@@ -1,0 +1,11 @@
+error[E3074]: recursive generic calls through `pong` grow a type argument without bound
+  --> tests/types/fail/E3074_expanding_mutual_instantiation.tarn:12:9
+   |
+ 7 |         pong(x, n - 1)
+   |         -------------- `ping` passes `A` to `pong`
+12 |         ping(Wrap{v: x}, n - 1)
+   |         ^^^^^^^^^^^^^^^^^^^^^^^ `B` becomes `Wrap<B>` here
+   |
+   = note: each turn of the recursion wraps `B` again, so compiling it would need infinitely many copies of `ping`
+   = help: pass the growing value behind a non-generic type such as `any Interface`, or keep the type argument unchanged
+

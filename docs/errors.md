@@ -186,6 +186,7 @@ Golden tests in `tests/**/fail/*.tarn` pin the rendered text of each code.
 |------|------|---------|
 | E3051 | `unmodeled_replacement_loans` | a native guard replacement cannot accept new payload loans without a stored-loan effect contract |
 | E3073 | `self_through_dynamic_interface` | a method using `Self` beyond its receiver cannot be called through `any I`; use `<T: I>` |
+| E3074 | `expanding_instantiation` | recursive generic calls grow a type argument without bound, so specialization would never finish |
 | E3071 | `unsafe_call_outside_unsafe` | calling an `unsafe fn` requires an `unsafe` block (ADR 0047) |
 | E3072 | `unsized_pointee` | raw pointers point to sized values; use `ffi.slice` for a slice's first element |
 | E3060 | `await_outside_async` | await requires an async function context; an ordinary closure does not inherit that context |

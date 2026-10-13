@@ -1,0 +1,17 @@
+// The growth may happen in a different function of the recursive cycle.
+struct Wrap<T> {
+    v T
+}
+fn ping<A>(x A, n i32) {
+    if n > 0 {
+        pong(x, n - 1)
+    }
+}
+fn pong<B>(x B, n i32) {
+    if n > 0 {
+        ping(Wrap{v: x}, n - 1)
+    }
+}
+fn main() {
+    ping(1, 3)
+}

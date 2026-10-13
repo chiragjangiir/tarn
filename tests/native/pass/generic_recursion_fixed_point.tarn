@@ -1,0 +1,25 @@
+// Recursion that keeps type arguments unchanged reaches a fixed point.
+struct Wrap<T> {
+    v T
+}
+fn ping<A>(x A, n i32) i32 {
+    if n > 0 {
+        return pong(x, n - 1)
+    }
+    return n
+}
+fn pong<B>(x B, n i32) i32 {
+    if n > 0 {
+        return ping(x, n - 1)
+    }
+    return n
+}
+fn twice<T>(x T, n i32) i32 {
+    f := fn(k i32) i32 {
+        return ping(Wrap{v: k}, k)
+    }
+    return f(n) + ping(x, n)
+}
+fn main() {
+    print(twice(Wrap{v: Wrap{v: 1}}, 4))
+}

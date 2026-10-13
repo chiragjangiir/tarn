@@ -4,24 +4,29 @@ use std::collections::HashMap;
 use tarn_ir::{post_drop as post, *};
 use tarn_types::{Ty, Typed};
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Key {
     pub function: FunctionId,
     pub args: Vec<Ty>,
 }
+const MAX_INSTANCES: usize = 1 << 20;
 struct Instances<'a> {
     source: &'a post::Program,
     keys: Vec<Key>,
+    index: HashMap<Key, FunctionId>,
     functions: Vec<post::Function>,
 }
 impl Instances<'_> {
     fn intern(&mut self, function: FunctionId, args: Vec<Ty>) -> Result<FunctionId> {
         let key = Key { function, args };
-        if let Some(i) = self.keys.iter().position(|k| *k == key) {
-            return Ok(FunctionId(i as u32));
+        if let Some(id) = self.index.get(&key) {
+            return Ok(*id);
         }
-        if self.keys.len() >= 256 {
-            return Err(Error::unsupported("monomorphization exceeds 256 reachable instances (possible expanding recursion)"));
+        // Expanding instantiation cycles are rejected before this phase
+        // (E3074); type-size limits bound the cases that check cannot see.
+        // This cap only guards memory against a compiler bug.
+        if self.keys.len() >= MAX_INSTANCES {
+            return Err(Error::bug(format!("monomorphization exceeds {MAX_INSTANCES} reachable instances")));
         }
         let template = self.source.functions.get(function.0 as usize).ok_or_else(|| Error::bug("missing specialization template"))?;
         if template.decl.generics.len() != key.args.len() {
@@ -31,6 +36,7 @@ impl Instances<'_> {
             concrete(ty)?;
         }
         let id = FunctionId(self.keys.len() as u32);
+        self.index.insert(key.clone(), id);
         self.keys.push(key);
         self.functions.push(template.clone());
         Ok(id)
@@ -81,7 +87,7 @@ pub fn specialize(p: &post::Program, t: &Typed) -> Result<post::Program> {
 }
 
 pub fn specialize_entry(p: &post::Program, t: &Typed, entry: FunctionId) -> Result<post::Program> {
-    let mut cx = Instances { source: p, keys: Vec::new(), functions: Vec::new() };
+    let mut cx = Instances { source: p, keys: Vec::new(), index: HashMap::new(), functions: Vec::new() };
     cx.intern(entry, Vec::new())?;
     let mut i = 0;
     while i < cx.keys.len() {

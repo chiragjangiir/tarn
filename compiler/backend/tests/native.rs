@@ -32,6 +32,27 @@ fn native_scalar_and_aggregate_suite() {
     }
 }
 #[test]
+fn large_programs_are_not_limited_by_function_count() {
+    // Functions, closures and generic instances all become separate
+    // specializations; ordinary programs must not hit an arbitrary cap.
+    let mut src = String::from("struct Box<T> {\n    v T\n}\nfn id<T>(x T) T {\n    return x\n}\n");
+    for i in 0..600 {
+        src.push_str(&format!("fn f{i}(x i32) i32 {{\n    g := fn(y i32) i32 {{\n        return y + {i}\n    }}\n    return id(g(x)) % 1000\n}}\n"));
+        src.push_str(&format!("struct S{i} {{\n    v i32\n}}\n"));
+    }
+    src.push_str("fn main() {\n    var s: i32 = 0\n");
+    for i in 0..600 {
+        src.push_str(&format!("    s = f{i}(s) + id(Box{{v: S{i}{{v: 0}}}}).v.v\n"));
+    }
+    src.push_str("    print(s)\n}\n");
+    let (exe, _) = compile(&src, "many-functions");
+    let output = Command::new(&exe).output().unwrap();
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    let expected = (0..600).fold(0, |s, i| (s + i) % 1000);
+    assert_eq!(String::from_utf8(output.stdout).unwrap(), format!("{expected}\n"));
+    std::fs::remove_dir_all(exe.parent().unwrap()).unwrap();
+}
+#[test]
 fn native_drops_match_post_drop_interpreter_on_every_boolean_path() {
     let mut paths: Vec<_> = std::fs::read_dir("../../tests/drops/pass").unwrap().map(|e| e.unwrap().path()).filter(|p| p.extension().is_some_and(|x| x == "tarn")).collect();
     paths.sort();

@@ -23,9 +23,9 @@ Copy values require no resource glue, so their generic destruction is removed.
 This is a type substitution, not another ownership analysis.
 
 Dynamic, unsized by-value and unresolved substitutions fail explicitly. A borrowed
-slice is a supported sized substitution. Limits are 256 reachable instances,
-64 levels and 4096 nodes per type argument; expanding polymorphic recursion fails
-with a backend limitation rather than hanging. Native aggregate layout also has
+slice is a supported sized substitution. Limits are 64 levels and 4096 nodes
+per type argument. The original 256-instance cap was replaced by ADR 0065:
+expanding polymorphic recursion is rejected before specialization (E3074). Native aggregate layout also has
 a 64-level ADT limit. These are correctness limits, not language layout rules.
 
 Concrete generic structs and enums use the existing canonical layout authority,

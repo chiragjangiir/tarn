@@ -1,0 +1,12 @@
+// Each call wraps T again: specialization would never reach a fixed point.
+struct Wrap<T> {
+    v T
+}
+fn grow<T>(x T, n i32) {
+    if n > 0 {
+        grow(Wrap{v: x}, n - 1)
+    }
+}
+fn main() {
+    grow(1, 3)
+}

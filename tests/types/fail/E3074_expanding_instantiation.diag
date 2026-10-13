@@ -1,0 +1,9 @@
+error[E3074]: recursive generic calls through `grow` grow a type argument without bound
+ --> tests/types/fail/E3074_expanding_instantiation.tarn:7:9
+  |
+7 |         grow(Wrap{v: x}, n - 1)
+  |         ^^^^^^^^^^^^^^^^^^^^^^^ `T` becomes `Wrap<T>` here
+  |
+  = note: each turn of the recursion wraps `T` again, so compiling it would need infinitely many copies of `grow`
+  = help: pass the growing value behind a non-generic type such as `any Interface`, or keep the type argument unchanged
+
