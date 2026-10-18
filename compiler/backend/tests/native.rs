@@ -52,6 +52,39 @@ fn large_programs_are_not_limited_by_function_count() {
     assert_eq!(String::from_utf8(output.stdout).unwrap(), format!("{expected}\n"));
     std::fs::remove_dir_all(exe.parent().unwrap()).unwrap();
 }
+/// Two backend blowups found by scaling sweeps (n = 1600): the inliner kept
+/// scanning blocks it had just spliced, so one round followed a call chain to
+/// the caller limit in every function (21 s, 1.6M statements for 2.4K); and
+/// enum drop glue compared every variant at every drop site even when no
+/// variant owned anything (CodeTooLarge).
+#[test]
+fn call_chains_and_wide_enums_build_in_linear_time() {
+    let mut chain = String::new();
+    for i in 0..1600 {
+        let body = if i == 0 { "x".to_string() } else { format!("f{}(x) + 1", i - 1) };
+        chain.push_str(&format!("fn f{i}(x i64) i64 {{\n    return {body}\n}}\n"));
+    }
+    chain.push_str("fn main() {\n    print(f1599(0))\n}\n");
+    let mut wide = String::from("enum E {\n");
+    for i in 0..1600 {
+        wide.push_str(&format!("    V{i}(i64)\n"));
+    }
+    wide.push_str("}\nfn f(e E) i64 {\n    match e {\n");
+    for i in 0..1600 {
+        wide.push_str(&format!("        E.V{i}(x) => return x + {i}\n"));
+    }
+    wide.push_str("    }\n}\nfn main() {\n    print(f(E.V7(1)))\n}\n");
+    for (tag, src, expected) in [("call-chain", chain, "1599\n"), ("wide-enum", wide, "8\n")] {
+        let start = std::time::Instant::now();
+        let (exe, _) = compile(&src, tag);
+        let elapsed = start.elapsed();
+        let output = Command::new(&exe).output().unwrap();
+        assert_eq!(String::from_utf8(output.stdout).unwrap(), expected, "{tag}");
+        // Generous for unoptimized test builds; the regressions took minutes.
+        assert!(elapsed < std::time::Duration::from_secs(120), "{tag}: build took {elapsed:?}");
+        std::fs::remove_dir_all(exe.parent().unwrap()).unwrap();
+    }
+}
 #[test]
 fn native_drops_match_post_drop_interpreter_on_every_boolean_path() {
     let mut paths: Vec<_> = std::fs::read_dir("../../tests/drops/pass").unwrap().map(|e| e.unwrap().path()).filter(|p| p.extension().is_some_and(|x| x == "tarn")).collect();

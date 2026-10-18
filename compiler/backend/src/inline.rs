@@ -22,8 +22,13 @@ pub fn inline(mut p: post::Program, t: &tarn_types::Typed) -> post::Program {
             if p.functions[i].decl.asynchronous.is_some() {
                 continue;
             }
+            // Only the caller's own blocks: spliced callee blocks are appended
+            // and must wait for the next round, or one round would follow a
+            // call chain to the caller limit in every function (ROUNDS bounds
+            // the inlining depth only if each round expands one level).
+            let original = p.functions[i].blocks.len();
             let mut b = 0;
-            while b < p.functions[i].blocks.len() {
+            while b < original {
                 let target = match &p.functions[i].blocks[b].term {
                     Terminator::Call { callee: Callee::Fn(id, _), next: Some(_), spawn: false, .. } if (id.0 as usize) != i && candidates.get(id.0 as usize).copied().unwrap_or(false) => *id,
                     _ => {

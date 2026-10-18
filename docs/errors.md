@@ -81,6 +81,7 @@ stream them:
 | E1017 | `chained_range` | range operators cannot be chained |
 | E1018 | `missing_type_colon` | a type annotation on a binding needs `:` |
 | E1019 | `uninit_var_needs_type` | `var x` without a value needs a type |
+| E1020 | `nesting_too_deep` | expressions, blocks, types or patterns nested more than 128 levels |
 | E2001 | `undefined_name` | cannot find `x` in this scope |
 | E2002 | `duplicate_definition` | `x` is defined more than once |
 | E2003 | `duplicate_in_scope` | `x` is already declared in this scope |

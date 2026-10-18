@@ -132,10 +132,13 @@ pub(crate) fn mutated_symbols(body: &Block, uses: &HashMap<NodeId, tarn_resolve:
 /// Capture moves use typed value contexts. Borrow operands and borrowed method
 /// receivers do not transfer ownership. The move checker remains authoritative
 /// about initialization, including partial moves and reinitialization.
-pub(crate) fn consumed_symbols(body: &Block, uses: &HashMap<NodeId, tarn_resolve::Use>, t: &crate::TypeTables, decls: &crate::Decls, captures: &HashMap<SymbolId, crate::Ty>) -> HashSet<SymbolId> {
+/// `expr_ty` gives an expression's resolved type on demand; resolving only the
+/// closure body's expressions keeps this proportional to the closure.
+pub(crate) fn consumed_symbols(body: &Block, uses: &HashMap<NodeId, tarn_resolve::Use>, t: &crate::TypeTables, expr_ty: &dyn Fn(NodeId) -> Option<crate::Ty>, decls: &crate::Decls, captures: &HashMap<SymbolId, crate::Ty>) -> HashSet<SymbolId> {
     struct V<'a> {
         uses: &'a HashMap<NodeId, tarn_resolve::Use>,
         t: &'a crate::TypeTables,
+        expr_ty: &'a dyn Fn(NodeId) -> Option<crate::Ty>,
         decls: &'a crate::Decls,
         captures: &'a HashMap<SymbolId, crate::Ty>,
         out: HashSet<SymbolId>,
@@ -153,7 +156,7 @@ pub(crate) fn consumed_symbols(body: &Block, uses: &HashMap<NodeId, tarn_resolve
         }
         fn expr(&mut self, e: &Expr, moving: bool) {
             if moving
-                && self.t.expr_types.get(&e.id).is_some_and(|ty| !self.decls.is_copy(ty))
+                && (self.expr_ty)(e.id).is_some_and(|ty| !self.decls.is_copy(&ty))
                 && let Some(s) = self.root(e)
                 && self.captures.contains_key(&s)
             {
@@ -167,11 +170,11 @@ pub(crate) fn consumed_symbols(body: &Block, uses: &HashMap<NodeId, tarn_resolve
                         let owned = self.t.receivers.get(&e.id).is_some_and(|r| r.kind == ReceiverKind::Value);
                         self.expr(base, owned);
                     } else {
-                        let consuming = matches!(self.t.expr_types.get(&callee.id), Some(crate::Ty::Fn(CallMode::Once, ..)));
+                        let consuming = matches!((self.expr_ty)(callee.id), Some(crate::Ty::Fn(CallMode::Once, ..)));
                         self.expr(callee, consuming);
                     }
                     for a in args {
-                        self.expr(a, !print && !matches!(self.t.expr_types.get(&a.id), Some(crate::Ty::Ref(..))));
+                        self.expr(a, !print && !matches!((self.expr_ty)(a.id), Some(crate::Ty::Ref(..))));
                     }
                 }
                 ExprKind::Field { base, .. } => self.expr(base, false),
@@ -269,7 +272,7 @@ pub(crate) fn consumed_symbols(body: &Block, uses: &HashMap<NodeId, tarn_resolve
             }
         }
     }
-    let mut v = V { uses, t, decls, captures, out: HashSet::new() };
+    let mut v = V { uses, t, expr_ty, decls, captures, out: HashSet::new() };
     v.block(body);
     v.out
 }

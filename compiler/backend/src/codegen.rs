@@ -903,6 +903,24 @@ impl Cx<'_, '_> {
             self.flags.push(slot);
         }
         self.blocks = self.f.blocks.iter().map(|_| self.b.create_block()).collect();
+        // Seal each IR block once every predecessor's terminator is emitted.
+        // Unsealed blocks make the SSA builder add speculative block
+        // parameters for every variable read, then remove them all at the end:
+        // quadratic in blocks x variables for long functions or large matches.
+        let mut remaining = vec![0usize; self.f.blocks.len()];
+        for block in &self.f.blocks {
+            let mut successors = block.term.successors();
+            successors.sort();
+            successors.dedup();
+            for s in successors {
+                remaining[s.0 as usize] += 1;
+            }
+        }
+        for (b, n) in remaining.iter().enumerate() {
+            if *n == 0 {
+                self.b.seal_block(self.blocks[b]);
+            }
+        }
         let entry = self.blocks[0];
         self.b.append_block_params_for_function_params(entry);
         self.b.switch_to_block(entry);
@@ -949,7 +967,18 @@ impl Cx<'_, '_> {
                 self.statement(&stmt.op)?;
             }
             self.term(&block.term)?;
+            let mut successors = block.term.successors();
+            successors.sort();
+            successors.dedup();
+            for s in successors {
+                remaining[s.0 as usize] -= 1;
+                if remaining[s.0 as usize] == 0 {
+                    self.b.seal_block(self.blocks[s.0 as usize]);
+                }
+            }
         }
+        // Safety net: anything still unsealed (sealing twice is not allowed,
+        // seal_all_blocks skips sealed blocks).
         self.b.seal_all_blocks();
         // The outer caller consumes/finalizes the builder after lowering.
         Ok(())
@@ -1005,16 +1034,22 @@ impl Cx<'_, '_> {
             _ => None,
         }
     }
+    /// Enter a helper block whose predecessors are all emitted, sealing it so
+    /// variable reads inside it resolve without speculative block parameters.
+    fn enter(&mut self, block: cl::Block) {
+        self.b.switch_to_block(block);
+        self.b.seal_block(block);
+    }
     fn fault_if(&mut self, condition: cl::Value) {
         let fail = self.b.create_block();
         let next = self.b.create_block();
         // Faults abort: keep them out of the hot path's layout.
         self.b.set_cold_block(fail);
         self.b.ins().brif(condition, fail, &[], next, &[]);
-        self.b.switch_to_block(fail);
+        self.enter(fail);
         self.runtime("tarn_rt_fault", &[]);
         self.b.ins().trap(cl::TrapCode::user(1).unwrap());
-        self.b.switch_to_block(next);
+        self.enter(next);
     }
     fn place_ty(&self, p: &Place) -> Result<Ty> {
         post::place_ty(&self.f.decl, self.t, p).ok_or_else(|| Error::bug(format!("invalid place {p:?}")))
@@ -1732,7 +1767,7 @@ impl Cx<'_, '_> {
                     let next = self.b.create_block();
                     let eq = self.b.ins().icmp_imm(IntCC::Equal, v, *n as i64);
                     self.b.ins().brif(eq, self.blocks[target.0 as usize], &[], next, &[]);
-                    self.b.switch_to_block(next);
+                    self.enter(next);
                 }
                 self.b.ins().jump(self.blocks[otherwise.0 as usize], &[]);
             }
@@ -2107,10 +2142,10 @@ impl Cx<'_, '_> {
                 let yes = self.b.create_block();
                 let next = self.b.create_block();
                 self.b.ins().brif(c, yes, &[], next, &[]);
-                self.b.switch_to_block(yes);
+                self.enter(yes);
                 self.drop_plan(d)?;
                 self.b.ins().jump(next, &[]);
-                self.b.switch_to_block(next);
+                self.enter(next);
             }
             post::Drop::Fields { fields, .. } => {
                 for (_, d) in fields {
@@ -2120,22 +2155,28 @@ impl Cx<'_, '_> {
             post::Drop::Variants { place, variants } => {
                 let addr = self.addr(place)?;
                 let tag = self.b.ins().load(types::I32, cl::MemFlags::new(), addr, 0);
+                // Same shape as enum drop glue: one range fault, then only the
+                // variants whose plan destroys something.
+                let invalid = self.b.ins().icmp_imm(IntCC::UnsignedGreaterThanOrEqual, tag, variants.len() as i64);
+                self.fault_tag_if(invalid);
                 let next = self.b.create_block();
                 for (v, fields) in variants.iter().enumerate() {
+                    if fields.is_empty() {
+                        continue;
+                    }
                     let yes = self.b.create_block();
                     let no = self.b.create_block();
                     let c = self.b.ins().icmp_imm(IntCC::Equal, tag, v as i64);
                     self.b.ins().brif(c, yes, &[], no, &[]);
-                    self.b.switch_to_block(yes);
+                    self.enter(yes);
                     for (_, d) in fields {
                         self.drop_plan(d)?;
                     }
                     self.b.ins().jump(next, &[]);
-                    self.b.switch_to_block(no);
+                    self.enter(no);
                 }
-                self.runtime("tarn_rt_fault", &[]);
-                self.b.ins().trap(cl::TrapCode::user(2).unwrap());
-                self.b.switch_to_block(next);
+                self.b.ins().jump(next, &[]);
+                self.enter(next);
             }
             post::Drop::Remaining { place, flag } => {
                 if !matches!(self.flags[flag.0 as usize], Flag::Bits(..) | Flag::FrameBits(..)) {
@@ -2147,10 +2188,10 @@ impl Cx<'_, '_> {
                     let yes = self.b.create_block();
                     let next = self.b.create_block();
                     self.b.ins().brif(c, yes, &[], next, &[]);
-                    self.b.switch_to_block(yes);
+                    self.enter(yes);
                     self.drop_array_element(place, i)?;
                     self.b.ins().jump(next, &[]);
-                    self.b.switch_to_block(next);
+                    self.enter(next);
                 }
             }
         }
@@ -2177,6 +2218,41 @@ impl Cx<'_, '_> {
         }
         let addr = self.addr(p)?;
         self.drop_at(addr, &ty)
+    }
+    /// Fault with the corrupted-enum-tag code when `condition` holds.
+    fn fault_tag_if(&mut self, condition: cl::Value) {
+        let fail = self.b.create_block();
+        let next = self.b.create_block();
+        self.b.set_cold_block(fail);
+        self.b.ins().brif(condition, fail, &[], next, &[]);
+        self.enter(fail);
+        self.runtime("tarn_rt_fault", &[]);
+        self.b.ins().trap(cl::TrapCode::user(2).unwrap());
+        self.enter(next);
+    }
+    /// Whether `drop_at` emits any destruction for `ty`. Mirrors its cases:
+    /// trusted native resources, then Copy/references (nothing), then owned
+    /// strings, callables, containers and aggregates by their fields.
+    fn needs_drop(&self, ty: &Ty) -> bool {
+        let d = &self.t.decls;
+        if let Ty::Adt(id, _) = ty {
+            let native = [d.exec_waker, d.exec_state, d.net_poll, d.process_owner, d.process_pipe, d.fs_file, d.fs_directory];
+            if native.contains(&Some(*id)) || d.net_sockets.contains(id) {
+                return true;
+            }
+        }
+        if d.is_copy(ty) || matches!(ty, Ty::Ref(..)) {
+            return false;
+        }
+        match ty {
+            Ty::Array(elem, n) => *n > 0 && self.needs_drop(elem),
+            Ty::Adt(id, _) if [d.vec, d.async_task, d.task_ref, d.mutex, d.mutex_guard, d.task].contains(&Some(*id)) || d.atomics.contains_key(id) => true,
+            Ty::Adt(..) => match layout::layout(self.t, ty) {
+                Ok(l) => l.fields.iter().chain(l.variants.iter().flatten()).any(|(_, ty)| self.needs_drop(ty)),
+                Err(_) => true,
+            },
+            _ => true,
+        }
     }
     fn drop_at(&mut self, addr: cl::Value, ty: &Ty) -> Result<()> {
         if let Ty::Adt(id, _) = ty {
@@ -2215,7 +2291,8 @@ impl Cx<'_, '_> {
             self.runtime("tarn_rt_net_drop", &[fd]);
             return Ok(());
         }
-        if self.t.decls.is_copy(ty) || matches!(ty, Ty::Ref(..)) {
+        // Copy, references and aggregates of them destroy nothing.
+        if !self.needs_drop(ty) {
             return Ok(());
         }
         match ty {
@@ -2266,23 +2343,31 @@ impl Cx<'_, '_> {
                     }
                 } else {
                     let tag = self.b.ins().load(types::I32, cl::MemFlags::new(), addr, 0);
+                    // A corrupted tag still faults; only variants with fields that
+                    // need destruction are tested, so glue stays proportional to
+                    // what it destroys (a 1600-variant enum of integers emitted
+                    // 1600 comparisons per drop site before).
+                    let invalid = self.b.ins().icmp_imm(IntCC::UnsignedGreaterThanOrEqual, tag, l.variants.len() as i64);
+                    self.fault_tag_if(invalid);
                     let next = self.b.create_block();
                     for (v, fields) in l.variants.iter().enumerate() {
+                        if !fields.iter().any(|(_, ty)| self.needs_drop(ty)) {
+                            continue;
+                        }
                         let yes = self.b.create_block();
                         let no = self.b.create_block();
                         let c = self.b.ins().icmp_imm(IntCC::Equal, tag, v as i64);
                         self.b.ins().brif(c, yes, &[], no, &[]);
-                        self.b.switch_to_block(yes);
+                        self.enter(yes);
                         for (offset, ty) in fields {
                             let ptr = self.b.ins().iadd_imm(addr, i64::from(*offset));
                             self.drop_at(ptr, ty)?;
                         }
                         self.b.ins().jump(next, &[]);
-                        self.b.switch_to_block(no);
+                        self.enter(no);
                     }
-                    self.runtime("tarn_rt_fault", &[]);
-                    self.b.ins().trap(cl::TrapCode::user(2).unwrap());
-                    self.b.switch_to_block(next);
+                    self.b.ins().jump(next, &[]);
+                    self.enter(next);
                 }
             }
             _ => return Err(Error::unsupported(format!("drop glue {ty:?}"))),

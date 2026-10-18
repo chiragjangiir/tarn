@@ -182,9 +182,9 @@ fn prove_function(f: &mut Function) {
     };
     // Parameters and every other local start unconstrained.
     let entry_state = State::default();
-    let block_local = block_local_temporaries(f, &analysis);
     let blocks = f.blocks.len();
     let (heads, rank) = loop_heads(f);
+    let live = live_on_entry(f, &rank);
     let mut input: Vec<Option<State>> = vec![None; blocks];
     let mut visits = vec![0u32; blocks];
     input[0] = Some(entry_state);
@@ -237,11 +237,10 @@ fn prove_function(f: &mut Function) {
             }
         }
         for (target, state) in edges {
-            // Temporaries read only inside their own block are dead on exit.
+            // Locals not read again before being overwritten are dead here;
+            // keeping their ranges would grow every later state.
             let mut state = state;
-            for l in &block_local[b] {
-                state.0.remove(l);
-            }
+            state.0.retain(|l, _| live[target][l / 64] & (1 << (l % 64)) != 0);
             let merged = match &input[target] {
                 None => state,
                 Some(old) => {
@@ -376,64 +375,96 @@ fn apply(s: &mut State, an: &Analysis, op: BinOp, a: usize, bound: &Operand) {
     }
 }
 
-/// Per block, the tracked locals whose every mention is in that block and
-/// starts with a plain assignment: no other block, nor a later visit of the
-/// same block, can observe their value, so they leave the state at its exit.
-fn block_local_temporaries(f: &Function, a: &Analysis) -> Vec<Vec<usize>> {
-    const SHARED: usize = usize::MAX;
-    let n = f.locals.len();
-    // Defining block, or SHARED once a local is mentioned elsewhere or read first.
-    let mut home: Vec<Option<usize>> = vec![None; n];
-    let mut mention = |l: usize, b: usize, write: bool| {
-        home[l] = match home[l] {
-            None if write => Some(b),
-            Some(h) if h == b => Some(h),
-            _ => Some(SHARED),
-        };
-    };
+/// Locals live on entry to each block: read on some path before being
+/// overwritten. Reads are over-approximated (projected writes and drops read),
+/// which only keeps more ranges. Backward worklist in postorder.
+fn live_on_entry(f: &Function, rank: &[usize]) -> Vec<Vec<u64>> {
+    let n = f.blocks.len();
+    let words = f.locals.len().div_ceil(64);
+    let mut uses = vec![vec![0u64; words]; n];
+    let mut defs = vec![vec![0u64; words]; n];
     for (b, block) in f.blocks.iter().enumerate() {
+        let (u, d) = (&mut uses[b], &mut defs[b]);
+        let read = |l: usize, u: &mut Vec<u64>, d: &Vec<u64>| {
+            if d[l / 64] & (1 << (l % 64)) == 0 {
+                u[l / 64] |= 1 << (l % 64);
+            }
+        };
+        let write = |p: &Place, u: &mut Vec<u64>, d: &mut Vec<u64>| {
+            let mut reads = Vec::new();
+            place_reads(p, &mut reads);
+            for l in reads {
+                read(l, u, d);
+            }
+            let l = p.local.0 as usize;
+            if p.proj.is_empty() {
+                d[l / 64] |= 1 << (l % 64);
+            } else {
+                read(l, u, d);
+            }
+        };
         for st in &block.stmts {
             match &st.kind {
                 StatementKind::Assign(p, rv) => {
                     let mut reads = Vec::new();
                     rvalue_locals(rv, &mut reads);
+                    for l in reads {
+                        read(l, u, d);
+                    }
+                    write(p, u, d);
+                }
+                StatementKind::Drop(p) => {
+                    let mut reads = vec![p.local.0 as usize];
                     place_reads(p, &mut reads);
                     for l in reads {
-                        mention(l, b, false);
+                        read(l, u, d);
                     }
-                    mention(p.local.0 as usize, b, p.proj.is_empty());
                 }
-                StatementKind::Drop(p) => mention(p.local.0 as usize, b, false),
                 StatementKind::StorageLive(_) | StatementKind::StorageDead(_) => {}
             }
         }
         let mut reads = Vec::new();
         match &block.term {
             Terminator::Switch { discr, .. } => operand_locals(discr, &mut reads),
-            Terminator::Call { callee, args, dest, .. } => {
+            Terminator::Call { callee, args, .. } => {
                 if let Callee::Value(o) = callee {
                     operand_locals(o, &mut reads);
                 }
                 args.iter().for_each(|o| operand_locals(o, &mut reads));
-                place_reads(dest, &mut reads);
-                reads.push(dest.local.0 as usize);
             }
             _ => {}
         }
         for l in reads {
-            mention(l, b, false);
+            read(l, u, d);
+        }
+        if let Terminator::Call { dest, .. } = &block.term {
+            write(dest, u, d);
         }
     }
-    let mut out = vec![Vec::new(); f.blocks.len()];
-    for (l, h) in home.into_iter().enumerate() {
-        if let Some(b) = h
-            && b != SHARED
-            && a.tracked[l].is_some()
-        {
-            out[b].push(l);
+    let mut predecessors = vec![Vec::new(); n];
+    for (b, block) in f.blocks.iter().enumerate() {
+        for s in block.term.successors() {
+            predecessors[s.0 as usize].push(b);
         }
     }
-    out
+    let mut live = vec![vec![0u64; words]; n];
+    let mut work: std::collections::BTreeSet<(std::cmp::Reverse<usize>, usize)> = (0..n).map(|b| (std::cmp::Reverse(rank[b]), b)).collect();
+    while let Some((_, b)) = work.pop_first() {
+        let mut out = vec![0u64; words];
+        for s in f.blocks[b].term.successors() {
+            for (o, x) in out.iter_mut().zip(&live[s.0 as usize]) {
+                *o |= x;
+            }
+        }
+        let entry: Vec<u64> = (0..words).map(|w| uses[b][w] | (out[w] & !defs[b][w])).collect();
+        if entry != live[b] {
+            live[b] = entry;
+            for &p in &predecessors[b] {
+                work.insert((std::cmp::Reverse(rank[p]), p));
+            }
+        }
+    }
+    live
 }
 
 fn place_reads(p: &Place, out: &mut Vec<usize>) {

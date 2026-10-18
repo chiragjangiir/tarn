@@ -1511,28 +1511,17 @@ impl<'e, 'a> FnCx<'e, 'a> {
             let ty = match ty { Ty::Var(v) if self.infer.kind(v) == VarKind::Int => Ty::Int(IntTy::I64), Ty::Var(v) if self.infer.kind(v) == VarKind::Float => Ty::Float(FloatTy::F64), ty => ty };
             (*s, ty)
         }).collect()).unwrap_or_default();
-        let mut capture_tables = TypeTables::default();
-        capture_tables.expr_types = self
-            .tables
-            .expr_types
-            .iter()
-            .map(|(id, ty)| {
-                (
-                    *id,
-                    match self.infer.zonk(ty) {
-                        Ty::Var(v) if self.infer.kind(v) == VarKind::Int => Ty::Int(IntTy::I64),
-                        Ty::Var(v) if self.infer.kind(v) == VarKind::Float => Ty::Float(FloatTy::F64),
-                        ty => ty,
-                    },
-                )
+        // Resolve only the expressions the body analysis asks about; copying
+        // and resolving the whole function's tables per closure was quadratic.
+        let (infer, tables) = (&self.infer, &self.tables);
+        let expr_ty = |id: NodeId| {
+            tables.expr_types.get(&id).map(|ty| match infer.zonk(ty) {
+                Ty::Var(v) if infer.kind(v) == VarKind::Int => Ty::Int(IntTy::I64),
+                Ty::Var(v) if infer.kind(v) == VarKind::Float => Ty::Float(FloatTy::F64),
+                ty => ty,
             })
-            .collect();
-        capture_tables.receivers = self.tables.receivers.clone();
-        capture_tables.owned_captures = self.tables.owned_captures.clone();
-        capture_tables.callable_calls = self.tables.callable_calls.clone();
-        capture_tables.borrowed_builtin_calls = self.tables.borrowed_builtin_calls.clone();
-        capture_tables.binding_modes = self.tables.binding_modes.clone();
-        let consuming = !crate::captures::consumed_symbols(body, &self.env.r.tables[self.m.0 as usize].uses, &capture_tables, &self.env.decls, &captures).is_empty();
+        };
+        let consuming = !crate::captures::consumed_symbols(body, &self.env.r.tables[self.m.0 as usize].uses, &self.tables, &expr_ty, &self.env.decls, &captures).is_empty();
         let mutable = captured.is_some_and(|c| c.symbols.iter().any(|s| mutated.contains(s)));
         let owned = matches!(e.kind, ExprKind::Closure { owned: true, .. });
         let modes = captured.map(|c| c.symbols.iter().map(|s| (*s, if owned { crate::CaptureMode::Move } else if mutated.contains(s) { crate::CaptureMode::MutableBorrow } else { crate::CaptureMode::SharedBorrow })).collect()).unwrap_or_default();

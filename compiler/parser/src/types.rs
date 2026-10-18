@@ -12,6 +12,16 @@ pub(crate) fn starts_type(k: &TokenKind) -> bool {
 impl Parser {
     pub(crate) fn parse_type(&mut self) -> Type {
         let start = self.span();
+        if !self.descend() {
+            return Type { id: self.id(), span: self.since(start), kind: TypeKind::Error };
+        }
+        let result = self.parse_type_nested();
+        self.ascend();
+        result
+    }
+
+    fn parse_type_nested(&mut self) -> Type {
+        let start = self.span();
         let mode = if self.at(&TokenKind::Mut) && self.nth(1) == &TokenKind::Fn {
             self.bump();
             CallMode::Mutable

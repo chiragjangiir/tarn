@@ -8,6 +8,16 @@ use tarn_lexer::TokenKind;
 impl Parser {
     /// `{` statements separated by line breaks `}`
     pub(crate) fn parse_block(&mut self) -> Block {
+        let start = self.span();
+        if !self.descend() {
+            return Block { id: self.id(), span: self.since(start), stmts: Vec::new() };
+        }
+        let result = self.parse_block_nested();
+        self.ascend();
+        result
+    }
+
+    fn parse_block_nested(&mut self) -> Block {
         let open = self.span();
         let id = self.id();
         let mut stmts = Vec::new();

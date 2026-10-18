@@ -175,6 +175,16 @@ impl Parser {
 
     fn parse_unary(&mut self) -> Expr {
         let start = self.span();
+        if !self.descend() {
+            return self.error_expr(start);
+        }
+        let result = self.parse_unary_nested();
+        self.ascend();
+        result
+    }
+
+    fn parse_unary_nested(&mut self) -> Expr {
+        let start = self.span();
         let kind = match self.peek().clone() {
             TokenKind::Spawn => self.prefix(UnaryOp::Spawn),
             TokenKind::Minus => self.prefix(UnaryOp::Neg),

@@ -51,7 +51,18 @@ pub(crate) struct Parser {
     prev_span: Span,
     /// Token index of the last reported error, to avoid cascades.
     last_error_pos: Option<usize>,
+    /// Current expression/block/type/pattern nesting, bounded by MAX_NESTING.
+    depth: usize,
+    /// Set once nesting overflowed: the rest of the file is skipped silently.
+    too_deep: bool,
 }
+
+/// Deepest accepted nesting of expressions, blocks, types and patterns. Every
+/// later phase walks the AST recursively, so this bound keeps them all within
+/// the stack instead of aborting on generated or malformed input. Real code
+/// nests a few dozen levels at most; 128 levels still fit a 2 MiB thread
+/// stack in an unoptimized build through every phase (256 did not).
+pub(crate) const MAX_NESTING: usize = 128;
 
 pub(crate) fn describe(kind: &TokenKind) -> String {
     match kind {
@@ -80,6 +91,8 @@ impl Parser {
             no_struct: false,
             prev_span: Span::new(file, first.start, first.start),
             last_error_pos: None,
+            depth: 0,
+            too_deep: false,
         }
     }
 
@@ -242,7 +255,37 @@ impl Parser {
 
     // ------------------------------------------------------------ errors
 
+    /// Enter one nesting level. Past MAX_NESTING, report E1020 once and skip
+    /// to the end of the file: recovering at that depth would only cascade.
+    fn descend(&mut self) -> bool {
+        if self.too_deep {
+            return false;
+        }
+        if self.depth >= MAX_NESTING {
+            let span = self.span();
+            self.error(
+                Diagnostic::error("E1020", "nesting_too_deep", format!("code is nested more than {MAX_NESTING} levels deep"))
+                    .primary(span, "nesting limit reached here")
+                    .help("split the code into smaller functions or flatten the expression"),
+            );
+            self.too_deep = true;
+            while *self.peek() != TokenKind::Eof {
+                self.bump();
+            }
+            return false;
+        }
+        self.depth += 1;
+        true
+    }
+
+    fn ascend(&mut self) {
+        self.depth -= 1;
+    }
+
     fn error(&mut self, d: Diagnostic) {
+        if self.too_deep {
+            return;
+        }
         if self.last_error_pos == Some(self.pos) {
             return;
         }

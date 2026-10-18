@@ -120,6 +120,10 @@ struct Fx<'a> {
     /// (`i == stmts.len()`: before the terminator); `live_out[b]` after it.
     live: Vec<Vec<BitSet>>,
     live_out: Vec<BitSet>,
+    /// Per local, computed once: its type may hold loans (references or tasks).
+    holds_loans: Vec<bool>,
+    /// Per local, computed once: its type owns a task or loan-bearing resource.
+    resource: Vec<bool>,
     diags: Vec<Diagnostic>,
     reported: HashSet<usize>,
 }
@@ -167,7 +171,10 @@ fn operand_place(o: &Operand) -> Option<&Place> {
 impl<'a> Fx<'a> {
     fn new(f: &'a Function, t: &'a Typed, prov: &'a RwLock<HashMap<FunctionId, Provenance>>) -> Self {
         let mut fx =
-            Fx { f, t, prov, spawn_fn: None, loans: Vec::new(), loan_at: HashMap::new(), nl: f.locals.len(), live: Vec::new(), live_out: Vec::new(), diags: Vec::new(), reported: HashSet::new() };
+            Fx { f, t, prov, spawn_fn: None, loans: Vec::new(), loan_at: HashMap::new(), nl: f.locals.len(), live: Vec::new(), live_out: Vec::new(), holds_loans: Vec::new(), resource: Vec::new(), diags: Vec::new(), reported: HashSet::new() };
+        // Deep types make these structural queries costly; ask once per local.
+        fx.holds_loans = f.locals.iter().map(|l| t.decls.may_contain_references(&l.ty) || t.decls.contains_task(&l.ty)).collect();
+        fx.resource = f.locals.iter().map(|l| t.decls.contains_task(&l.ty) || t.decls.contains_loan_resource(&l.ty)).collect();
         // Placeholder loans: one per reference-holding parameter.
         for (i, l) in f.params().enumerate() {
             if t.decls.may_contain_references(&f.local(l).ty) || t.decls.contains_task(&f.local(l).ty) {
@@ -252,7 +259,7 @@ impl<'a> Fx<'a> {
             // unlocking a guard or retiring a wake keeps borrowed storage live until this use.
             StatementKind::Drop(p) => {
                 Self::place_uses(p, live);
-                if self.t.decls.contains_task(&self.f.local(p.local).ty) || self.t.decls.contains_loan_resource(&self.f.local(p.local).ty) { Self::read_uses(p, live); }
+                if self.resource[p.local.0 as usize] { Self::read_uses(p, live); }
             },
         }
     }
@@ -291,21 +298,30 @@ impl<'a> Fx<'a> {
     fn liveness(&mut self) {
         let n = self.f.blocks.len();
         let mut live_in = vec![BitSet::new(self.nl); n];
-        let mut changed = true;
-        while changed {
-            changed = false;
-            for b in (0..n).rev() {
-                let mut live = BitSet::new(self.nl);
-                for s in self.f.blocks[b].term.successors() {
-                    live.union(&live_in[s.0 as usize]);
-                }
-                Self::term_back(&self.f.blocks[b].term, &mut live);
-                for s in self.f.blocks[b].stmts.iter().rev() {
-                    self.stmt_back(&s.kind, &mut live);
-                }
-                if live_in[b] != live {
-                    live_in[b] = live;
-                    changed = true;
+        // Backward worklist in postorder (successors first); a change only
+        // re-queues predecessors. Full rounds in index order needed one round
+        // per nesting level, quadratic for deeply nested control flow.
+        let rank = crate::util::reverse_postorder(self.f);
+        let mut predecessors = vec![Vec::new(); n];
+        for (b, block) in self.f.blocks.iter().enumerate() {
+            for s in block.term.successors() {
+                predecessors[s.0 as usize].push(b);
+            }
+        }
+        let mut work: std::collections::BTreeSet<(std::cmp::Reverse<usize>, usize)> = (0..n).map(|b| (std::cmp::Reverse(rank[b]), b)).collect();
+        while let Some((_, b)) = work.pop_first() {
+            let mut live = BitSet::new(self.nl);
+            for s in self.f.blocks[b].term.successors() {
+                live.union(&live_in[s.0 as usize]);
+            }
+            Self::term_back(&self.f.blocks[b].term, &mut live);
+            for s in self.f.blocks[b].stmts.iter().rev() {
+                self.stmt_back(&s.kind, &mut live);
+            }
+            if live_in[b] != live {
+                live_in[b] = live;
+                for &p in &predecessors[b] {
+                    work.insert((std::cmp::Reverse(rank[p]), p));
                 }
             }
         }
@@ -376,7 +392,7 @@ impl<'a> Fx<'a> {
     fn write_holds(&self, h: &mut Holds, dest: &Place, inflow: BitSet) {
         let d = dest.local.0 as usize;
         if dest.proj.is_empty() {
-            h.set(d, if self.t.decls.may_contain_references(&self.f.local(dest.local).ty) || self.t.decls.contains_task(&self.f.local(dest.local).ty) { inflow } else { BitSet::EMPTY });
+            h.set(d, if self.holds_loans[d] { inflow } else { BitSet::EMPTY });
         } else if !dest.proj.contains(&Proj::Deref) {
             h.add(d, &inflow);
         }
@@ -386,8 +402,7 @@ impl<'a> Fx<'a> {
     /// provenance (all arguments when the callee is not statically known).
     fn call_inflow(&self, h: &Holds, callee: &Callee, args: &[Operand], dest: &Place) -> BitSet {
         let mut inflow = BitSet::new(self.loans.len());
-        let dty = &self.f.local(dest.local).ty;
-        if dest.proj.is_empty() && !self.t.decls.may_contain_references(dty) && !self.t.decls.contains_task(dty) {
+        if dest.proj.is_empty() && !self.holds_loans[dest.local.0 as usize] {
             return inflow;
         }
         let positions: Option<Provenance> = match callee {
@@ -446,7 +461,7 @@ impl<'a> Fx<'a> {
 
     fn consume_resource_operand(&self, h: &mut Holds, operand: &Operand) {
         if let Operand::Move(place) = operand
-            && place.proj.is_empty() && (self.t.decls.contains_task(&self.f.local(place.local).ty) || self.t.decls.contains_loan_resource(&self.f.local(place.local).ty)) {
+            && place.proj.is_empty() && self.resource[place.local.0 as usize] {
             h.clear(place.local.0 as usize);
         }
     }
@@ -469,7 +484,7 @@ impl<'a> Fx<'a> {
                 }
                 StatementKind::StorageLive(l) | StatementKind::StorageDead(l) => h.clear(l.0 as usize),
                 StatementKind::Drop(place) => {
-                    if place.proj.is_empty() && (self.t.decls.contains_task(&self.f.local(place.local).ty) || self.t.decls.contains_loan_resource(&self.f.local(place.local).ty)) {
+                    if place.proj.is_empty() && self.resource[place.local.0 as usize] {
                         h.clear(place.local.0 as usize);
                     }
                 }
@@ -539,6 +554,10 @@ impl<'a> Fx<'a> {
         while let Some((_, b)) = work.pop_first() {
             let mut h = ins[b].clone().unwrap();
             self.block_forward(b, &mut h, false);
+            // Loans of locals dead on exit never conflict again (`active` only
+            // considers live holders) and every later read of a local implies
+            // it is live here, so they leave the state instead of piling up.
+            h.0.retain(|l, _| self.live_out[b].contains(*l));
             for s in self.f.blocks[b].term.successors() {
                 let s = s.0 as usize;
                 let changed = match &mut ins[s] {

@@ -8,6 +8,16 @@ use tarn_lexer::TokenKind;
 impl Parser {
     pub(crate) fn parse_pattern(&mut self) -> Pattern {
         let start = self.span();
+        if !self.descend() {
+            return Pattern { id: self.id(), span: self.since(start), kind: PatternKind::Error };
+        }
+        let result = self.parse_pattern_nested();
+        self.ascend();
+        result
+    }
+
+    fn parse_pattern_nested(&mut self) -> Pattern {
+        let start = self.span();
         let kind = match self.peek().clone() {
             TokenKind::Ident(n) if n == "_" => {
                 self.bump();

@@ -176,7 +176,14 @@ impl Cx<'_> {
                         if self.report {
                             let d = self.drop_decision(st, p);
                             self.drops.push((BlockId(b as u32), si, d));
-                            let states = self.mp.paths.iter().enumerate().map(|(i, path)| {
+                            // Drop elaboration reads only the dropped path's own
+                            // state (via its ancestors) and its subtree; recording
+                            // every path of the function made each drop O(paths).
+                            let mut relevant = self.mp.ancestors(p);
+                            relevant.extend_from_slice(self.mp.subtree(p));
+                            let states = relevant.into_iter().map(|id| {
+                                let i = id.0 as usize;
+                                let path = self.mp.path(id);
                                 let mut proj = Vec::new();
                                 let mut cur = MovePathId(i as u32);
                                 while let Some(parent) = self.mp.path(cur).parent {
