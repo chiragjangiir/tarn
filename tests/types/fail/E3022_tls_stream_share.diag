@@ -1,0 +1,8 @@
+error[E3022]: `TlsStream` does not implement `Share`
+ --> tests/types/fail/E3022_tls_stream_share.tarn:7:5
+  |
+7 |     shared(&tls)
+  |     ^^^^^^^^^^^^ required by a bound `Share` here
+  |
+  = help: `TlsStream` must satisfy `Share` structurally; generic parameters require an explicit bound
+

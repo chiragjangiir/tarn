@@ -1,0 +1,8 @@
+import "io"
+import "net"
+fn main() Result<void, io.Error> {
+    var tls = try net.TlsStream.connect(&"https://localhost:1", &net.TlsOptions.new())
+    try tls.close()
+    try tls.write_all("late".bytes())
+    return Ok(())
+}

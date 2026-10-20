@@ -462,6 +462,12 @@ pub fn emit_entry(p: &post::Program, t: &Typed, test: bool) -> Result<Vec<u8>> {
         ("tarn_rt_net_waker_drop", vec![types::I64], vec![]),
         ("tarn_rt_net_exec_drop", vec![types::I64], vec![]),
         ("tarn_rt_net_poll_drop", vec![types::I64], vec![]),
+        ("tarn_rt_net_tls_drop", vec![types::I64], vec![]),
+        ("tarn_rt_net_tls_connect", vec![types::I64; 4], vec![]),
+        ("tarn_rt_net_tls_read", vec![types::I64, types::I64, types::I64, types::I64, types::I8], vec![]),
+        ("tarn_rt_net_tls_write", vec![types::I64, types::I64, types::I64, types::I64, types::I8], vec![]),
+        ("tarn_rt_net_tls_fd", vec![types::I64; 2], vec![]),
+        ("tarn_rt_net_close_tls", vec![types::I64; 2], vec![]),
         ("tarn_rt_net_nonblocking", vec![types::I64, types::I32, types::I8], vec![]),
         ("tarn_rt_net_mode", vec![types::I64, types::I32], vec![]),
         ("tarn_rt_net_connected", vec![types::I64, types::I32], vec![]),
@@ -2236,7 +2242,7 @@ impl Cx<'_, '_> {
     fn needs_drop(&self, ty: &Ty) -> bool {
         let d = &self.t.decls;
         if let Ty::Adt(id, _) = ty {
-            let native = [d.exec_waker, d.exec_state, d.net_poll, d.process_owner, d.process_pipe, d.fs_file, d.fs_directory];
+            let native = [d.exec_waker, d.exec_state, d.net_poll, d.net_tls, d.process_owner, d.process_pipe, d.fs_file, d.fs_directory];
             if native.contains(&Some(*id)) || d.net_sockets.contains(id) {
                 return true;
             }
@@ -2267,6 +2273,11 @@ impl Cx<'_, '_> {
         if matches!(ty, Ty::Adt(id, _) if Some(*id) == self.t.decls.net_poll) {
             let handle = self.b.ins().load(types::I64, cl::MemFlags::new(), addr, 0);
             self.runtime("tarn_rt_net_poll_drop", &[handle]);
+            return Ok(());
+        }
+        if matches!(ty, Ty::Adt(id, _) if Some(*id) == self.t.decls.net_tls) {
+            let handle = self.b.ins().load(types::I64, cl::MemFlags::new(), addr, 0);
+            self.runtime("tarn_rt_net_tls_drop", &[handle]);
             return Ok(());
         }
         for (owner, helper) in [(self.t.decls.process_owner, "tarn_rt_process_drop"), (self.t.decls.process_pipe, "tarn_rt_process_pipe_drop")] {

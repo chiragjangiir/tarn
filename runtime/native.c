@@ -1168,6 +1168,8 @@ struct tarn_curl_api {
     void (*cleanup)(void *);
     void *(*append)(void *, const char *);
     void (*free_headers)(void *);
+    int (*send)(void *, const void *, size_t, size_t *);
+    int (*recv)(void *, void *, size_t, size_t *);
     int ready;
 };
 static struct tarn_curl_api tarn_curl;
@@ -1181,6 +1183,9 @@ static void tarn_curl_load(void) {
     LOAD(getinfo, "curl_easy_getinfo"); LOAD(cleanup, "curl_easy_cleanup");
     LOAD(append, "curl_slist_append"); LOAD(free_headers, "curl_slist_free_all");
 #undef LOAD
+    /* Optional for one-shot HTTPS; required only by persistent TLS streams. */
+    *(void **)(&tarn_curl.send) = dlsym(tarn_curl.library, "curl_easy_send");
+    *(void **)(&tarn_curl.recv) = dlsym(tarn_curl.library, "curl_easy_recv");
     tarn_curl.ready = tarn_curl.global_init(3L) == 0;
     /* Process-lifetime library/global state; never unload beneath another task. */
 }
@@ -1245,6 +1250,76 @@ done:
 #undef SET
     return code;
 }
+
+/* Persistent TLS client streams (ADR 0066). libcurl connect-only mode does
+ * DNS, TCP, the handshake and full verification, then moves raw application
+ * bytes. The descriptor belongs to the curl handle: Tarn never closes it.
+ * Errors use domain 5: positive libcurl codes, -1 unavailable, -3 invalid
+ * input, -5 a stream that already failed. CURLE_AGAIN (81) is WouldBlock. */
+#include <poll.h>
+typedef struct { void *curl; int fd; int failed; } TarnTls;
+static int tls_text(const TarnString *text, char **out) {
+    if (text->len > 4096 || memchr(text->bytes, 0, text->len)) return 0;
+    *out = malloc(text->len + 1); if (!*out) abort();
+    memcpy(*out, text->bytes, text->len); (*out)[text->len] = 0;
+    return 1;
+}
+void tarn_rt_net_tls_connect(TarnNetRaw *out, const TarnString *url, const TarnString *ca, int64_t timeout) {
+    net_init(out); out->domain = 5;
+    char *address = NULL, *trust = NULL;
+    if (timeout <= 0 || timeout > LONG_MAX || url->len < 9 || memcmp(url->bytes, "https://", 8)
+        || !tls_text(url, &address) || !tls_text(ca, &trust)) { out->code = -3; free(address); return; }
+    pthread_once(&tarn_curl_once, tarn_curl_load);
+    if (!tarn_curl.ready || !tarn_curl.send || !tarn_curl.recv) { out->code = -1; free(address); free(trust); return; }
+    void *handle = tarn_curl.init();
+    int code = handle ? 0 : 27;
+    int socket = -1; /* curl_socket_t is int on Linux, not long */
+#define SET(option, value) do { if (!code) code = tarn_curl.setopt(handle, option, value); } while (0)
+    /* Same policy as tarn_https_request: HTTPS only, no redirect/proxy, full
+     * verification. 141 CONNECT_ONLY, 156 CONNECTTIMEOUT_MS bounds the setup. */
+    SET(10002, address); SET(181, 2L); SET(182, 2L);
+    SET(52, 0L); SET(64, 1L); SET(81, 2L); SET(99, 1L);
+    SET(10004, ""); SET(156, (long)timeout); SET(141, 1L);
+    if (*trust) SET(10065, trust);
+#undef SET
+    if (!code) code = tarn_curl.perform(handle);
+    if (!code) code = tarn_curl.getinfo(handle, 0x50002C, &socket); /* ACTIVESOCKET */
+    if (!code && socket < 0) code = 2;
+    free(address); free(trust);
+    if (code) { if (handle) tarn_curl.cleanup(handle); out->code = code; return; }
+    TarnTls *tls = malloc(sizeof(*tls)); if (!tls) abort();
+    tls->curl = handle; tls->fd = socket; tls->failed = 0;
+    net_trace("open", tls->fd);
+    out->domain = 0; out->value = (int64_t)(uintptr_t)tls;
+}
+/* One partial transfer. With `wait`, CURLE_AGAIN waits for the descriptor and
+ * retries; plaintext already buffered by TLS is always attempted first. */
+static void tls_transfer(TarnNetRaw *out, uint64_t handle, uint8_t *bytes, uint64_t len, uint8_t wait, int writing) {
+    TarnTls *tls = (TarnTls *)(uintptr_t)handle;
+    net_init(out);
+    if (tls->failed) { out->domain = 5; out->code = -5; return; }
+    if (!len) return;
+    for (;;) {
+        size_t moved = 0;
+        int code = writing ? tarn_curl.send(tls->curl, bytes, (size_t)len, &moved) : tarn_curl.recv(tls->curl, bytes, (size_t)len, &moved);
+        if (!code) { out->value = (int64_t)moved; return; }
+        if (code != 81) { tls->failed = 1; out->domain = 5; out->code = code; return; }
+        if (!wait) { out->domain = 5; out->code = 81; return; }
+        struct pollfd ready = { tls->fd, writing ? POLLOUT : POLLIN, 0 };
+        if (poll(&ready, 1, -1) < 0 && errno != EINTR) { out->code = errno; return; }
+    }
+}
+void tarn_rt_net_tls_read(TarnNetRaw *out, uint64_t handle, uint8_t *bytes, uint64_t len, uint8_t wait) { tls_transfer(out, handle, bytes, len, wait, 0); }
+void tarn_rt_net_tls_write(TarnNetRaw *out, uint64_t handle, const uint8_t *bytes, uint64_t len, uint8_t wait) { tls_transfer(out, handle, (uint8_t *)bytes, len, wait, 1); }
+void tarn_rt_net_tls_fd(TarnNetRaw *out, uint64_t handle) { net_init(out); out->value = ((TarnTls *)(uintptr_t)handle)->fd; }
+/* Cleanup closes the descriptor exactly once; never retried. */
+void tarn_rt_net_tls_drop(uint64_t handle) {
+    TarnTls *tls = (TarnTls *)(uintptr_t)handle;
+    net_trace("close", tls->fd);
+    tarn_curl.cleanup(tls->curl);
+    free(tls);
+}
+void tarn_rt_net_close_tls(TarnNetRaw *out, uint64_t handle) { net_init(out); tarn_rt_net_tls_drop(handle); }
 
 /* Mechanical libc decimal conversion using an explicit C numeric locale.
  * Public grammar, policies and UTF-8 ownership stay in Tarn. */

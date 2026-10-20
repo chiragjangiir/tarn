@@ -54,6 +54,7 @@ tested and documented.
 
 | 32 | Offset text traversal, integer Builder allocation removal and UTF-8 CLI | implemented scoped subset: [report](phase-32-33-report.md), [ADR 0061](adr/0061-offset-text-traversal.md) |
 | 33 | Bounded system HTTPS and selected-ticket classification CLI | implemented scoped subset: [report](phase-32-33-report.md), [ADR 0062](adr/0062-bounded-system-https.md); local TLS acceptance, not a full Go application port |
+| 34 | Persistent TLS client streams (`net.TlsStream`) over libcurl connect-only | implemented: [ADR 0066](adr/0066-persistent-tls-streams.md); local TLS echo acceptance; WebSocket, async handshake and ALPN remain future work |
 
 ## Milestones
 

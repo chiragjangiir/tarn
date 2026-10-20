@@ -7,7 +7,7 @@
 use tarn_types::{IntTy, Ty, Typed};
 
 /// Native intrinsics per layer; each `<layer>._<operation>` exists once.
-const LAYER_INTRINSICS: &[(&str, usize)] = &[("io", 5), ("time", 2), ("net", 22), ("runtime", 5)];
+const LAYER_INTRINSICS: &[(&str, usize)] = &[("io", 5), ("time", 2), ("net", 27), ("runtime", 5)];
 
 pub(crate) fn verify(t: &Typed) -> Vec<String> {
     let d = &t.decls;
@@ -19,7 +19,7 @@ pub(crate) fn verify(t: &Typed) -> Vec<String> {
     let loaded = |layer: &str| count(layer) != 0;
     let (io, time, net, runtime) = (loaded("io"), loaded("time"), loaded("net"), loaded("runtime"));
     // Layers load with what they build on: time/net need io; runtime needs all.
-    if !io || (runtime && !(time && net)) || (d.exec_owner.is_some() || d.exec_state.is_some()) != runtime || d.net_poll.is_some() != net {
+    if !io || (runtime && !(time && net)) || (d.exec_owner.is_some() || d.exec_state.is_some()) != runtime || d.net_poll.is_some() != net || d.net_tls.is_some() != net {
         return invalid();
     }
     if LAYER_INTRINSICS.iter().any(|(layer, expected)| loaded(layer) && count(layer) != *expected)
@@ -160,8 +160,22 @@ pub(crate) fn verify(t: &Typed) -> Vec<String> {
         let Some(token) = d.structs.get(token_id) else { return invalid() };
         if !token_args.is_empty() || !token.is_copy || !token.generics.is_empty() || token.fields.len() != 1
             || token.fields[0].name != "value" || token.fields[0].is_pub || token.fields[0].ty != Ty::Int(IntTy::U64) { return invalid(); }
+        // `TlsStream { native usize, nonblocking bool }`, both private.
+        let Some(tls_id) = d.net_tls else { return invalid() };
+        let Some(tls) = d.structs.get(&tls_id) else { return invalid() };
+        if tls.is_copy || !tls.generics.is_empty()
+            || tls.fields.iter().map(|f| (f.name.as_str(), &f.ty, f.is_pub)).collect::<Vec<_>>() != [("native", &Ty::Int(IntTy::Usize), false), ("nonblocking", &Ty::Bool, false)]
+            || !d.native_capabilities.get(&tls_id).is_some_and(|c| c.transfer && !c.share) { return invalid(); }
         let events = Ty::Slice(event.clone());
         let bytes = Ty::Slice(Box::new(Ty::Int(IntTy::U8)));
+        let text = Ty::Ref(false, Box::new(Ty::Str));
+        operations.extend([
+            ("tls_connect", vec![text.clone(), text, Ty::Int(IntTy::I64)]),
+            ("tls_read", vec![Ty::Int(IntTy::Usize), Ty::Ref(true, Box::new(bytes.clone())), Ty::Bool]),
+            ("tls_write", vec![Ty::Int(IntTy::Usize), Ty::Ref(false, Box::new(bytes.clone())), Ty::Bool]),
+            ("tls_fd", vec![Ty::Int(IntTy::Usize)]),
+            ("close_tls", vec![Ty::Adt(tls_id, vec![])]),
+        ]);
         operations.extend([
             ("resolve", vec![Ty::Ref(false, Box::new(Ty::Str))]),
             ("socket", vec![addr.clone(), Ty::Bool]),

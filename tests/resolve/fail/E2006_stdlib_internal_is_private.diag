@@ -3,8 +3,8 @@ error[E2006]: `_now` is private to module `io`
     |
   4 |     var raw = io._now()
     |                  ^^^^ not `pub`
-   ::: stdlib/io/io.tarn:111:23
-111 | extern "intrinsic" fn _now() _Raw
+   ::: stdlib/io/io.tarn:124:23
+124 | extern "intrinsic" fn _now() _Raw
     |                       ---- declared here
     |
     = help: mark it `pub` in `io`

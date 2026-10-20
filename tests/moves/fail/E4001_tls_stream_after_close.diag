@@ -1,0 +1,11 @@
+error[E4001]: use of moved value `tls`
+ --> tests/moves/fail/E4001_tls_stream_after_close.tarn:6:9
+  |
+5 |     try tls.close()
+  |         --- value moved here
+6 |     try tls.write_all("late".bytes())
+  |         ^^^ value used here after move
+  |
+  = note: `TlsStream` is not a copy type, so assigning or passing it moves it
+  = help: to keep using `tls`, borrow it where it is moved (`&tls`) instead of moving it
+

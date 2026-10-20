@@ -733,3 +733,123 @@ pub async fn BufferedWriter.flush(&mut self, stream &mut TcpStream) Result<void,
         self.start = start + count
     }
 }
+
+// Persistent TLS client streams (ADR 0066) through system libcurl connect-only
+// mode. The native handle owns the descriptor; Tarn borrows it for readiness
+// only and never closes it. Owned, Transfer, not Share: one task drives TLS.
+pub struct TlsStream {
+    native usize
+    nonblocking bool
+}
+pub struct TlsOptions {
+    pub timeout_millis u64
+    pub ca_file string
+}
+extern "intrinsic" fn _tls_connect(url &string, ca &string, timeout i64) io._Raw
+extern "intrinsic" fn _tls_read(handle usize, buffer &mut []u8, wait bool) io._Raw
+extern "intrinsic" fn _tls_write(handle usize, buffer &[]u8, wait bool) io._Raw
+extern "intrinsic" fn _tls_fd(handle usize) io._Raw
+extern "intrinsic" fn _close_tls(value TlsStream) io._Raw
+/// Connection and handshake bound; an empty CA file uses system trust.
+pub fn TlsOptions.new() TlsOptions { return TlsOptions{timeout_millis: 30000, ca_file: ""} }
+/// `https://host:port` only. Certificate and hostname verification are always
+/// on. DNS, TCP and the handshake block the current native task.
+pub fn TlsStream.connect(url &string, options &TlsOptions) Result<TlsStream, io.Error> {
+    if options.timeout_millis == 0 || options.timeout_millis > 9223372036854775807 { return Err(io._fail(io.ErrorKind.InvalidInput)) }
+    raw := try io._check(_tls_connect(url, &options.ca_file, i64(options.timeout_millis)))
+    return Ok(TlsStream{native: usize(raw.value), nonblocking: false})
+}
+/// Mode is stream state, not descriptor state: libcurl keeps the descriptor
+/// nonblocking, and blocking calls wait for readiness themselves.
+pub fn TlsStream.set_nonblocking(&mut self, enabled bool) { self.nonblocking = enabled }
+/// One partial read; zero is orderly EOF. After any error other than
+/// WouldBlock the stream is failed and every later transfer fails.
+pub fn TlsStream.read(&mut self, buffer &mut []u8) Result<usize, io.Error> {
+    checked := try io._check(_tls_read(self.native, buffer, !self.nonblocking))
+    return Ok(usize(checked.value))
+}
+pub fn TlsStream.write(&mut self, buffer &[]u8) Result<usize, io.Error> {
+    checked := try io._check(_tls_write(self.native, buffer, !self.nonblocking))
+    return Ok(usize(checked.value))
+}
+pub fn TlsStream.write_all(&mut self, buffer &[]u8) Result<void, io.Error> {
+    if self.nonblocking { return Err(io.Error{kind: io.ErrorKind.WouldBlock, code: 81, domain: 5}) }
+    var offset = usize(0)
+    for offset < buffer.len() {
+        count := try self.write(&buffer[offset..])
+        if count == 0 { return Err(io.Error{kind: io.ErrorKind.WriteZero, code: 0, domain: 0}) }
+        offset = offset + count
+    }
+    return Ok(())
+}
+/// Consuming close; ownership ends even if cleanup reports nothing.
+pub fn TlsStream.close(self) Result<void, io.Error> {
+    try io._check(_close_tls(self))
+    return Ok(())
+}
+fn _tls_descriptor(stream &TlsStream) i32 { return i32(_tls_fd(stream.native).value) }
+pub fn Poll.register_tls(&mut self, stream &TlsStream, interest Interest) Result<Token, io.Error> { return _registration(self.handle, _tls_descriptor(stream), 0, interest, Token{value: 0}) }
+pub fn Poll.modify_tls(&mut self, stream &TlsStream, token Token, interest Interest) Result<void, io.Error> {
+    try _registration(self.handle, _tls_descriptor(stream), 1, interest, token)
+    return Ok(())
+}
+pub fn Poll.deregister_tls(&mut self, stream &TlsStream, token Token) Result<void, io.Error> {
+    try _registration(self.handle, _tls_descriptor(stream), 2, Interest.Readable, token)
+    return Ok(())
+}
+// TLS may hold decrypted bytes while the descriptor is not readable, so a
+// poll always attempts the transfer before arming and again after arming.
+pub fn poll_tls_read(waker &io.Waker, stream &mut TlsStream, buffer &mut []u8) io.Progress<Result<usize, io.Error>> {
+    match io._check(_tls_read(stream.native, buffer, false)) {
+        Ok(raw) => { return io.Progress.Ready(Ok(usize(raw.value))) }
+        Err(error) => { if !io._would_block(error) { return io.Progress.Ready(Err(error)) } }
+    }
+    match io._arm(waker, _tls_descriptor(stream), 1) { Err(error) => { return io.Progress.Ready(Err(error)) }
+        Ok(value) => {} }
+    match io._check(_tls_read(stream.native, buffer, false)) {
+        Ok(raw) => { return io.Progress.Ready(Ok(usize(raw.value))) }
+        Err(error) => { if !io._would_block(error) { return io.Progress.Ready(Err(error)) } }
+    }
+    return io.Progress.Pending
+}
+pub fn poll_tls_write(waker &io.Waker, stream &mut TlsStream, buffer &[]u8) io.Progress<Result<usize, io.Error>> {
+    match io._check(_tls_write(stream.native, buffer, false)) {
+        Ok(raw) => { return io.Progress.Ready(Ok(usize(raw.value))) }
+        Err(error) => { if !io._would_block(error) { return io.Progress.Ready(Err(error)) } }
+    }
+    match io._arm(waker, _tls_descriptor(stream), 2) { Err(error) => { return io.Progress.Ready(Err(error)) }
+        Ok(value) => {} }
+    match io._check(_tls_write(stream.native, buffer, false)) {
+        Ok(raw) => { return io.Progress.Ready(Ok(usize(raw.value))) }
+        Err(error) => { if !io._would_block(error) { return io.Progress.Ready(Err(error)) } }
+    }
+    return io.Progress.Pending
+}
+// Async helpers never block the executor, whatever the stream's mode.
+pub async fn TlsStream.read_async(&mut self, buffer &mut []u8) Result<usize, io.Error> {
+    for {
+        match io._with_waker(fn(waker &io.Waker) io.Progress<Result<usize, io.Error>> { return io._leaf(waker, poll_tls_read(waker, self, buffer)) }) {
+            io.Progress.Ready(result) => { return result }
+            io.Progress.Pending => {}
+        }
+        io._async_park()
+    }
+}
+pub async fn TlsStream.write_async(&mut self, buffer &[]u8) Result<usize, io.Error> {
+    for {
+        match io._with_waker(fn(waker &io.Waker) io.Progress<Result<usize, io.Error>> { return io._leaf(waker, poll_tls_write(waker, self, buffer)) }) {
+            io.Progress.Ready(result) => { return result }
+            io.Progress.Pending => {}
+        }
+        io._async_park()
+    }
+}
+pub async fn TlsStream.write_all_async(&mut self, buffer &[]u8) Result<void, io.Error> {
+    var offset = usize(0)
+    for offset < buffer.len() {
+        count := try await self.write_async(&buffer[offset..])
+        if count == 0 { return Err(io.Error{kind: io.ErrorKind.WriteZero, code: 0, domain: 0}) }
+        offset = offset + count
+    }
+    return Ok(())
+}

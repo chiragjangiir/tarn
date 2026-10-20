@@ -70,3 +70,12 @@ int main(void) {
     assert!(Command::new(&exe).status().unwrap().success());
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+#[test]
+fn tls_stream_is_persistent_duplex_verified_and_released_once() {
+    let fixture = build(&root().join("tests/native/pass/tls_stream_fixture.tarn"), "tls-stream");
+    let output = Command::new("python3").arg(root().join("tests/integration/tls_stream_fixture.py"))
+        .arg(&fixture).output().unwrap();
+    assert!(output.status.success(), "{}\n{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+    std::fs::remove_dir_all(fixture.parent().unwrap()).unwrap();
+}

@@ -1,0 +1,179 @@
+import "io"
+import "net"
+import "os"
+import "runtime"
+import "string"
+// Persistent TLS streams (ADR 0066). The ordinary native suite only checks that
+// this compiles and runs; tests/integration/tls_stream_fixture.py supplies a
+// local TLS echo server, its CA and a hostname-mismatched URL.
+fn require(value bool) { if !value { panic("TLS stream assertion") } }
+fn zeros(count usize) Vec<u8> {
+    var bytes: Vec<u8> = Vec.new()
+    for bytes.len() < count { bytes.push(0) }
+    return bytes
+}
+fn would_block(error io.Error) bool {
+    match error.kind { io.ErrorKind.WouldBlock => { return true }
+        _ => { return false } }
+}
+fn blocking(url &string, options &net.TlsOptions) Result<void, io.Error> {
+    var tls = try net.TlsStream.connect(url, options)
+    message := "hola café 日本"
+    try tls.write_all(message.bytes())
+    var buffer = zeros(64)
+    var got = usize(0)
+    for got < message.len() {
+        count := try tls.read(&mut buffer.as_mut_slice()[got..])
+        require(count != 0)
+        got = got + count
+    }
+    match string.from_utf8(&buffer.as_slice()[..got]) { Some(text) => { require(text == message) }
+        None => { panic("echo UTF-8") } }
+    // The server answers "bye" with close_notify: orderly EOF reads zero.
+    try tls.write_all("bye".bytes())
+    for {
+        if try tls.read(buffer.as_mut_slice()) == usize(0) { break }
+    }
+    try tls.close()
+    return Ok(())
+}
+// One record decrypts as a whole: after the first byte arrives, the rest is
+// readable without the descriptor becoming readable again.
+fn buffered(url &string, options &net.TlsOptions) Result<void, io.Error> {
+    var tls = try net.TlsStream.connect(url, options)
+    try tls.write_all(zeros(8000).as_slice())
+    tls.set_nonblocking(true)
+    var poll = try net.Poll.new()
+    token := try poll.register_tls(&tls, net.Interest.Readable)
+    var events = [2]net.Event{net.Event.empty(), net.Event.empty()}
+    var small = zeros(100)
+    var first = usize(0)
+    for first == usize(0) {
+        match tls.read(small.as_mut_slice()) {
+            Ok(count) => { require(count != 0)
+                first = count }
+            Err(error) => { if !would_block(error) { return Err(error) }
+                require(try poll.wait(&mut events, 5000) > usize(0)) }
+        }
+    }
+    require(try tls.read(small.as_mut_slice()) > usize(0))
+    try poll.deregister_tls(&tls, token)
+    return Ok(())
+}
+// Full duplex on one task: 1 MiB through the echo server without deadlock.
+fn duplex(url &string, options &net.TlsOptions) Result<void, io.Error> {
+    var tls = try net.TlsStream.connect(url, options)
+    tls.set_nonblocking(true)
+    var poll = try net.Poll.new()
+    token := try poll.register_tls(&tls, net.Interest.ReadableWritable)
+    var events = [4]net.Event{net.Event.empty(), net.Event.empty(), net.Event.empty(), net.Event.empty()}
+    total := usize(1048576)
+    var chunk: Vec<u8> = Vec.new()
+    for chunk.len() < 16384 { chunk.push(u8(chunk.len() % 251)) }
+    var input = zeros(16384)
+    var sent = usize(0)
+    var received = usize(0)
+    for received < total {
+        if sent < total {
+            var end = chunk.len()
+            if total - sent < end { end = total - sent }
+            start := sent % chunk.len()
+            if chunk.len() - start < end { end = chunk.len() - start }
+            match tls.write(&chunk.as_slice()[start..start + end]) {
+                Ok(count) => { sent = sent + count
+                    if sent == total { try poll.modify_tls(&tls, token, net.Interest.Readable) } }
+                Err(error) => { if !would_block(error) { return Err(error) } }
+            }
+        }
+        var progressed = true
+        for progressed {
+            match tls.read(input.as_mut_slice()) {
+                Ok(count) => {
+                    require(count != 0)
+                    var i = usize(0)
+                    for i < count {
+                        require(input.get(i) == &u8((received + i) % chunk.len() % 251))
+                        i = i + 1
+                    }
+                    received = received + count
+                }
+                Err(error) => { if !would_block(error) { return Err(error) }
+                    progressed = false }
+            }
+        }
+        if received < total { require(try poll.wait(&mut events, 5000) > usize(0)) }
+    }
+    return Ok(())
+}
+async fn exchange(tls &mut net.TlsStream) Result<bool, io.Error> {
+    message := "async ping"
+    try await tls.write_all_async(message.bytes())
+    var buffer = zeros(32)
+    var got = usize(0)
+    for got < message.len() {
+        count := try await tls.read_async(&mut buffer.as_mut_slice()[got..])
+        if count == usize(0) { return Ok(false) }
+        got = got + count
+    }
+    match string.from_utf8(&buffer.as_slice()[..got]) { Some(text) => { return Ok(text == message) }
+        None => { return Ok(false) } }
+}
+fn asynchronous(url &string, options &net.TlsOptions) Result<void, io.Error> {
+    var tls = try net.TlsStream.connect(url, options)
+    execution := try runtime.Execution.new()
+    var op = runtime.Operation.new(&execution, exchange(&mut tls))
+    require(try try execution.block_on(&mut op))
+    return Ok(())
+}
+// Transfer: the owner moves to another native task, which drops it there.
+fn transferred(url &string, options &net.TlsOptions) Result<void, io.Error> {
+    var tls = try net.TlsStream.connect(url, options)
+    worker := spawn move fn() bool {
+        match tls.write_all("moved".bytes()) { Ok(value) => {}
+            Err(error) => { return false } }
+        var buffer = zeros(5)
+        var got = usize(0)
+        for got < usize(5) {
+            match tls.read(&mut buffer.as_mut_slice()[got..]) {
+                Ok(count) => { if count == usize(0) { return false }
+                    got = got + count }
+                Err(error) => { return false }
+            }
+        }
+        return true
+    }
+    require(worker.join())
+    return Ok(())
+}
+fn rejected(url &string, options &net.TlsOptions) {
+    match net.TlsStream.connect(url, options) {
+        Ok(stream) => { panic("verification bypassed") }
+        Err(error) => match error.kind { io.ErrorKind.InvalidData => {}
+            _ => panic("verification error kind") }
+    }
+}
+fn main() Result<void, io.Error> {
+    var args: Vec<string> = Vec.new()
+    match os.args() { Ok(value) => { args = value }
+        Err(error) => { panic("arguments") } }
+    if args.len() != 4 { print("TLS stream fixture")
+        return Ok(()) }
+    base := args.get(1)
+    var options = net.TlsOptions.new()
+    options.ca_file = args.get(2).clone()
+    options.timeout_millis = 5000
+    try blocking(base, &options)
+    try buffered(base, &options)
+    try duplex(base, &options)
+    try asynchronous(base, &options)
+    try transferred(base, &options)
+    rejected(args.get(3), &options)
+    rejected(base, &net.TlsOptions.new())
+    match net.TlsStream.connect(&"http://localhost:1", &options) {
+        Ok(stream) => { panic("plain scheme accepted") }
+        Err(error) => match error.kind { io.ErrorKind.InvalidInput => {}
+            _ => panic("scheme error kind") }
+    }
+    print("TLS stream fixture passed")
+    return Ok(())
+}

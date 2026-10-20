@@ -42,13 +42,13 @@ impl Cx<'_, '_> {
                 Ty::Ref(_, inner) if matches!(inner.as_ref(), Ty::Adt(id, _) if Some(*id) == self.t.decls.exec_waker) => values.push(self.b.ins().load(types::I64, cl::MemFlags::new(), value, 0)),
                 Ty::Ref(_, inner) if name == "runtime._waker_new" && matches!(inner.as_ref(), Ty::Adt(id, _) if Some(*id) == self.t.decls.exec_owner) => values.push(self.b.ins().load(types::I64, cl::MemFlags::new(), value, 0)),
                 Ty::Ref(_, inner) if **inner == Ty::Str => values.push(self.b.ins().load(types::I64, cl::MemFlags::new(), value, 0)),
-                Ty::Adt(id, _) if Some(*id) == self.t.decls.net_poll => values.push(self.b.ins().load(types::I64, cl::MemFlags::new(), value, 0)),
+                Ty::Adt(id, _) if Some(*id) == self.t.decls.net_poll || Some(*id) == self.t.decls.net_tls => values.push(self.b.ins().load(types::I64, cl::MemFlags::new(), value, 0)),
                 Ty::Adt(id, _) if self.t.decls.net_sockets.contains(id) => values.push(self.b.ins().load(types::I32, cl::MemFlags::new(), value, 0)),
                 _ => values.push(value),
             }
         }
         let operation = tarn_types::stdlib_intrinsic_operation(name).ok_or_else(|| Error::bug("network intrinsic name"))?;
-        let operation = if operation.starts_with("close_") && operation != "close_poll" { "close" } else { operation };
+        let operation = if operation.starts_with("close_") && operation != "close_poll" && operation != "close_tls" { "close" } else { operation };
         self.runtime(&format!("tarn_rt_net_{operation}"), &values);
         Ok(Some(Val { value: Some(out), ty: dest.clone() }))
     }

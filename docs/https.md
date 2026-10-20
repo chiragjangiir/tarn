@@ -30,7 +30,8 @@ fn main() {
 Only HTTPS is accepted. TLS certificate and hostname verification cannot be
 switched off. NUL C strings and newline header injection are rejected. Redirects,
 proxy environment, cookies, retries and transparent decompression are disabled.
-Response headers/streaming are not exposed. The response buffer is allocated to
+Response headers/streaming are not exposed; for a persistent duplex TLS byte
+stream use `net.TlsStream` ([ADR 0066](adr/0066-persistent-tls-streams.md)). The response buffer is allocated to
 the selected bound before the transfer; do not select unnecessarily large bounds.
 
 Errors preserve libcurl codes (e.g. 28 timeout, 60 certificate verification);

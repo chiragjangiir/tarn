@@ -105,6 +105,8 @@ pub struct Decls {
     pub process_intrinsics: HashMap<String, SymbolId>,
     pub net_error: Option<SymbolId>,
     pub net_poll: Option<SymbolId>,
+    /// `net.TlsStream` (ADR 0066): a private native curl handle owner.
+    pub net_tls: Option<SymbolId>,
     pub exec_waker: Option<SymbolId>,
     pub exec_state: Option<SymbolId>,
     pub exec_owner: Option<SymbolId>,
@@ -230,7 +232,8 @@ impl<'a> Env<'a> {
         }
         if let Some((_, net)) = stdlib("net") {
             env.decls.net_poll = net.get("Poll");
-            if let Some(id) = env.decls.net_poll {
+            env.decls.net_tls = net.get("TlsStream");
+            for id in [env.decls.net_poll, env.decls.net_tls].into_iter().flatten() {
                 env.decls.native_capabilities.insert(id, crate::NativeCapabilities { transfer: true, share: false });
             }
         }

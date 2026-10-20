@@ -212,6 +212,18 @@ original failure. Dropping Connecting closes the incomplete stream normally.
 See [ADR 0035](adr/0035-nonblocking-readiness.md). No async syntax, pending kernel
 buffer I/O, io_uring, HTTP, TLS or channels are implemented by Phase 12B.
 
+## Persistent TLS streams (Phase 34)
+
+`net.TlsStream.connect(&"https://host:port", &net.TlsOptions.new())` opens a
+verified TLS client stream through system libcurl in connect-only mode. It is
+owned, Transfer and not Share; `read`/`write` are partial, `write_all` is
+blocking-only, and `set_nonblocking` changes stream state rather than the
+descriptor. Register it with `Poll.register_tls`, or use `read_async`,
+`write_async` and `write_all_async`. TLS may hold decrypted bytes while the
+descriptor is not readable: after a readable event, read until WouldBlock
+before waiting again. Errors use `io.Error` domain 5 with libcurl codes
+preserved. See [ADR 0066](adr/0066-persistent-tls-streams.md).
+
 ## Manual suspended execution (Phase 12C)
 
 `Execution.new()` owns a single-thread readiness context. An `Operation<R>`

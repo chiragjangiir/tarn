@@ -1,0 +1,9 @@
+import "io"
+import "net"
+fn shared<T: Share>(value &T) {
+}
+fn main() Result<void, io.Error> {
+    tls := try net.TlsStream.connect(&"https://localhost:1", &net.TlsOptions.new())
+    shared(&tls)
+    return Ok(())
+}
