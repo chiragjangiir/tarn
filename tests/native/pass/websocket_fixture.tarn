@@ -1,0 +1,181 @@
+import "io"
+import "net"
+import "os"
+import "string"
+import "websocket"
+// WebSocket client (ADR 0067). The ordinary native suite checks the RFC 6455
+// accept vector only; tests/integration/websocket_fixture.py supplies a local
+// TLS WebSocket server and its CA.
+fn require(value bool) { if !value { panic("WebSocket assertion") } }
+fn ok<T>(result Result<T, websocket.Error>) T {
+    match result { Ok(value) => { return value }
+        Err(error) => {
+            print(error.io.native_code())
+            panic("unexpected WebSocket error")
+        } }
+}
+fn text(client &mut websocket.Client) string {
+    match ok(client.receive()) {
+        websocket.Message.Text(value) => { return value }
+        websocket.Message.Binary(data) => { panic("expected text, got binary") }
+        websocket.Message.Close(code, reason) => { panic("expected text, got close") }
+    }
+}
+fn binary(client &mut websocket.Client) Vec<u8> {
+    match ok(client.receive()) {
+        websocket.Message.Binary(data) => { return data }
+        websocket.Message.Text(value) => { panic("expected binary, got text") }
+        websocket.Message.Close(code, reason) => { panic("expected binary, got close") }
+    }
+}
+fn pattern(count usize, seed usize) Vec<u8> {
+    var bytes: Vec<u8> = Vec.with_capacity(count)
+    for bytes.len() < count { bytes.push(u8((bytes.len() + seed) % 251)) }
+    return bytes
+}
+fn same(left &[]u8, right &[]u8) bool {
+    if left.len() != right.len() { return false }
+    var i = usize(0)
+    for i < left.len() {
+        if left[i] != right[i] { return false }
+        i = i + 1
+    }
+    return true
+}
+fn failure(base &string, path &string, options &websocket.Options, command &string) websocket.ErrorKind {
+    match websocket.connect(&(base.clone() + path), options) {
+        Err(error) => { return error.kind }
+        Ok(value) => {
+            var client = value
+            ok(client.send_text(command))
+            for {
+                match client.receive() {
+                    Err(error) => { return error.kind }
+                    Ok(message) => {}
+                }
+            }
+        }
+    }
+}
+fn kind_is(actual websocket.ErrorKind, expected websocket.ErrorKind) bool {
+    return websocket_kind(actual) == websocket_kind(expected)
+}
+fn websocket_kind(kind websocket.ErrorKind) i32 {
+    match kind {
+        websocket.ErrorKind.Io => { return 0 }
+        websocket.ErrorKind.InvalidInput => { return 1 }
+        websocket.ErrorKind.Handshake => { return 2 }
+        websocket.ErrorKind.Protocol => { return 3 }
+        websocket.ErrorKind.TooLarge => { return 4 }
+        websocket.ErrorKind.InvalidUtf8 => { return 5 }
+        websocket.ErrorKind.Closed => { return 6 }
+    }
+}
+fn conversation(base &string, options &websocket.Options) {
+    // The first frame arrives in the same read as the 101 response.
+    var client = ok(websocket.connect(&(base.clone() + "/echo?greet=1"), options))
+    require(text(&mut client) == "hello")
+    ok(client.send_text(&"hola café 日本"))
+    require(text(&mut client) == "hola café 日本")
+    medium := pattern(1000, 1)
+    ok(client.send_binary(medium.as_slice()))
+    require(same(binary(&mut client).as_slice(), medium.as_slice()))
+    large := pattern(200000, 7)
+    ok(client.send_binary(large.as_slice()))
+    require(same(binary(&mut client).as_slice(), large.as_slice()))
+    ok(client.send_binary(&[0]u8{}))
+    require(binary(&mut client).len() == 0)
+    ok(client.ping("p".bytes()))
+    ok(client.send_text(&"fragments"))
+    require(text(&mut client) == "fragmentado ✓")
+    require(text(&mut client) == "pong-ok")
+    ok(client.close(1000, &"bye"))
+    match ok(client.receive()) {
+        websocket.Message.Close(code, reason) => { require(code == 1000)
+            require(reason == "") }
+        websocket.Message.Text(value) => { panic("close reply") }
+        websocket.Message.Binary(data) => { panic("close reply") }
+    }
+    match client.send_text(&"late") { Ok(value) => { panic("send after close") }
+        Err(error) => { require(kind_is(error.kind, websocket.ErrorKind.Closed)) } }
+    match client.receive() { Ok(value) => { panic("receive after close") }
+        Err(error) => { require(kind_is(error.kind, websocket.ErrorKind.Closed)) } }
+}
+fn server_close(base &string, options &websocket.Options) {
+    var client = ok(websocket.connect(&(base.clone() + "/echo"), options))
+    ok(client.send_text(&"goodbye"))
+    match ok(client.receive()) {
+        websocket.Message.Close(code, reason) => { require(code == 1001)
+            require(reason == "adiós") }
+        websocket.Message.Text(value) => { panic("server close") }
+        websocket.Message.Binary(data) => { panic("server close") }
+    }
+}
+// Nonblocking duplex: queued frames and partial frames survive WouldBlock.
+fn duplex(base &string, options &websocket.Options) Result<void, io.Error> {
+    var client = ok(websocket.connect(&(base.clone() + "/echo"), options))
+    client.set_nonblocking(true)
+    var poll = try net.Poll.new()
+    token := try poll.register_tls(client.stream(), net.Interest.ReadableWritable)
+    var events = [4]net.Event{net.Event.empty(), net.Event.empty(), net.Event.empty(), net.Event.empty()}
+    total := usize(64)
+    var sent = usize(0)
+    var received = usize(0)
+    for received < total {
+        for sent < total && client.pending() < usize(65536) {
+            ok(client.send_binary(pattern(16384, sent).as_slice()))
+            sent = sent + 1
+        }
+        if sent == total && client.pending() == 0 { try poll.modify_tls(client.stream(), token, net.Interest.Readable) }
+        var progressed = true
+        for progressed {
+            match client.receive() {
+                Ok(message) => match message {
+                    websocket.Message.Binary(data) => {
+                        require(same(data.as_slice(), pattern(16384, received).as_slice()))
+                        received = received + 1
+                    }
+                    websocket.Message.Text(value) => { panic("duplex text") }
+                    websocket.Message.Close(code, reason) => { panic("duplex close") }
+                }
+                Err(error) => {
+                    if !error.would_block() { panic("duplex receive") }
+                    progressed = false
+                }
+            }
+        }
+        if received < total { require(try poll.wait(&mut events, 5000) > usize(0)) }
+    }
+    return Ok(())
+}
+fn main() Result<void, io.Error> {
+    require(websocket.accept_key(&"dGhlIHNhbXBsZSBub25jZQ==") == "s3pPLMBiTxaQ9kYGzzhZRbK+xOo=")
+    var args: Vec<string> = Vec.new()
+    match os.args() { Ok(value) => { args = value }
+        Err(error) => { panic("arguments") } }
+    if args.len() != 3 { print("WebSocket fixture")
+        return Ok(()) }
+    base := args.get(1)
+    var options = websocket.Options.new()
+    options.tls.ca_file = args.get(2).clone()
+    options.tls.timeout_millis = 5000
+    ok(options.header(&"Authorization", &"Bearer fixture-token"))
+    match options.header(&"Sec-WebSocket-Key", &"forged") { Ok(value) => { panic("reserved header") }
+        Err(error) => {} }
+    match options.header(&"X-Bad", &"a\r\nInjected: 1") { Ok(value) => { panic("header injection") }
+        Err(error) => {} }
+    conversation(base, &options)
+    server_close(base, &options)
+    try duplex(base, &options)
+    require(kind_is(failure(base, &"/echo", &options, &"big"), websocket.ErrorKind.TooLarge))
+    require(kind_is(failure(base, &"/echo", &options, &"masked"), websocket.ErrorKind.Protocol))
+    require(kind_is(failure(base, &"/echo", &options, &"rsv"), websocket.ErrorKind.Protocol))
+    require(kind_is(failure(base, &"/echo", &options, &"utf8"), websocket.ErrorKind.InvalidUtf8))
+    require(kind_is(failure(base, &"/badaccept", &options, &""), websocket.ErrorKind.Handshake))
+    require(kind_is(failure(base, &"/extension", &options, &""), websocket.ErrorKind.Handshake))
+    require(kind_is(failure(base, &"/status", &options, &""), websocket.ErrorKind.Handshake))
+    require(kind_is(failure(&"ws://localhost:1", &"/", &options, &""), websocket.ErrorKind.InvalidInput))
+    require(kind_is(failure(&"wss://user@localhost:1", &"/", &options, &""), websocket.ErrorKind.InvalidInput))
+    print("WebSocket fixture passed")
+    return Ok(())
+}

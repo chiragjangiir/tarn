@@ -1,0 +1,548 @@
+// RFC 6455 WebSocket client over a verified TLS stream (ADR 0067). Ordinary
+// Tarn: URL, handshake, framing, masking, fragmentation and close policy live
+// here. The only native call is libc getrandom for the key and frame masks.
+import "ffi"
+import "io"
+import "net"
+import "string"
+extern "C" fn getrandom(buffer *mut u8, length usize, flags u32) isize
+
+pub copy enum ErrorKind {
+    Io
+    InvalidInput
+    Handshake
+    Protocol
+    TooLarge
+    InvalidUtf8
+    Closed
+}
+pub copy struct Error {
+    pub kind ErrorKind
+    pub io io.Error
+}
+fn _fail(kind ErrorKind) Error { return Error{kind: kind, io: io.Error.new(io.ErrorKind.OtherOs)} }
+fn _blocked(error io.Error) bool {
+    match error.kind { io.ErrorKind.WouldBlock => { return true }
+        _ => { return false } }
+}
+fn _io(error io.Error) Error { return Error{kind: ErrorKind.Io, io: error} }
+fn _need<T>(value Option<T>, kind ErrorKind) Result<T, Error> {
+    match value { Some(inner) => { return Ok(inner) }
+        None => { return Err(_fail(kind)) } }
+}
+fn _lift<T>(result Result<T, io.Error>) Result<T, Error> {
+    match result { Ok(inner) => { return Ok(inner) }
+        Err(error) => { return Err(_io(error)) } }
+}
+/// True for a nonblocking client with no complete progress yet.
+pub fn Error.would_block(&self) bool {
+    match self.kind { ErrorKind.Io => {}
+        _ => { return false } }
+    return _blocked(self.io)
+}
+
+pub enum Message {
+    Text(string)
+    Binary(Vec<u8>)
+    /// The peer's close code (1005 when it sent none) and UTF-8 reason.
+    Close(u16, string)
+}
+
+pub struct Options {
+    pub tls net.TlsOptions
+    /// Bound on one received message, fragments included (at most 64 MiB).
+    pub message_limit usize
+    /// Bound on encoded frames queued but not yet written.
+    pub send_limit usize
+    headers Vec<string>
+}
+pub fn Options.new() Options {
+    return Options{tls: net.TlsOptions.new(), message_limit: 1048576, send_limit: 1048576, headers: Vec.new()}
+}
+/// Extra handshake header such as `Authorization`. CR, LF, NUL and the
+/// headers this module owns are rejected.
+pub fn Options.header(&mut self, name &string, value &string) Result<void, Error> {
+    if name.is_empty() { return Err(_fail(ErrorKind.InvalidInput)) }
+    for byte in name.bytes() {
+        if byte <= 32 || byte >= 127 || byte == 58 { return Err(_fail(ErrorKind.InvalidInput)) }
+    }
+    for byte in value.bytes() {
+        if byte == 10 || byte == 13 || byte == 0 { return Err(_fail(ErrorKind.InvalidInput)) }
+    }
+    n := name.bytes()
+    if _same(n, "host".bytes()) || _same(n, "upgrade".bytes()) || _same(n, "connection".bytes()) || _same(n, "sec-websocket-key".bytes()) ||
+        _same(n, "sec-websocket-version".bytes()) || _same(n, "sec-websocket-extensions".bytes()) { return Err(_fail(ErrorKind.InvalidInput)) }
+    self.headers.push(name.clone() + ": " + value)
+    return Ok(())
+}
+
+pub struct Client {
+    transport net.TlsStream
+    input Vec<u8>
+    start usize
+    output Vec<u8>
+    sent usize
+    message Vec<u8>
+    fragment u8
+    limit usize
+    send_limit usize
+    received_close bool
+    sent_close bool
+    failed bool
+    nonblocking bool
+}
+
+// ASCII case-insensitive equality.
+fn _same(left &[]u8, right &[]u8) bool {
+    if left.len() != right.len() { return false }
+    var i = usize(0)
+    for i < left.len() {
+        var a = left[i]
+        var b = right[i]
+        if a >= 65 && a <= 90 { a = a + 32 }
+        if b >= 65 && b <= 90 { b = b + 32 }
+        if a != b { return false }
+        i = i + 1
+    }
+    return true
+}
+fn _random(buffer &mut []u8) Result<void, Error> {
+    // At most 256 bytes: Linux never interrupts or shortens such a read.
+    var result = isize(0)
+    unsafe { result = getrandom(ffi.slice_mut(buffer), buffer.len(), 0) }
+    if result != isize(buffer.len()) { return Err(_fail(ErrorKind.Io)) }
+    return Ok(())
+}
+
+fn _rotl(value u32, count u32) u32 { return (value << count) | (value >> (32 - count)) }
+// SHA-1 is needed only for Sec-WebSocket-Accept, never as a security digest.
+fn _sha1(data &[]u8) Vec<u8> {
+    var message: Vec<u8> = Vec.with_capacity(data.len() + 72)
+    message.extend_from_slice(data)
+    message.push(128)
+    for message.len() % 64 != 56 { message.push(0) }
+    bits := u64(data.len()) * 8
+    var shift = u64(56)
+    for {
+        message.push(u8((bits >> shift) & 255))
+        if shift == 0 { break }
+        shift = shift - 8
+    }
+    var h0 = u32(1732584193)
+    var h1 = u32(4023233417)
+    var h2 = u32(2562383102)
+    var h3 = u32(271733878)
+    var h4 = u32(3285377520)
+    var w: Vec<u32> = Vec.with_capacity(80)
+    for w.len() < 80 { w.push(0) }
+    var offset = usize(0)
+    for offset < message.len() {
+        var i = usize(0)
+        for i < 16 {
+            at := offset + i * 4
+            w.replace(i, (u32(message.at(at)) << 24) | (u32(message.at(at + 1)) << 16) | (u32(message.at(at + 2)) << 8) | u32(message.at(at + 3)))
+            i = i + 1
+        }
+        for i < 80 {
+            w.replace(i, _rotl(w.at(i - 3) ^ w.at(i - 8) ^ w.at(i - 14) ^ w.at(i - 16), 1))
+            i = i + 1
+        }
+        var a = h0
+        var b = h1
+        var c = h2
+        var d = h3
+        var e = h4
+        i = 0
+        for i < 80 {
+            var f = u32(0)
+            var k = u32(0)
+            if i < 20 { f = (b & c) | ((b ^ 4294967295) & d)
+                k = 1518500249
+            } else if i < 40 { f = b ^ c ^ d
+                k = 1859775393
+            } else if i < 60 { f = (b & c) | (b & d) | (c & d)
+                k = 2400959708
+            } else { f = b ^ c ^ d
+                k = 3395469782 }
+            temp := _rotl(a, 5).wrapping_add(f).wrapping_add(e).wrapping_add(k).wrapping_add(w.at(i))
+            e = d
+            d = c
+            c = _rotl(b, 30)
+            b = a
+            a = temp
+            i = i + 1
+        }
+        h0 = h0.wrapping_add(a)
+        h1 = h1.wrapping_add(b)
+        h2 = h2.wrapping_add(c)
+        h3 = h3.wrapping_add(d)
+        h4 = h4.wrapping_add(e)
+        offset = offset + 64
+    }
+    var digest: Vec<u8> = Vec.with_capacity(20)
+    for word in [5]u32{h0, h1, h2, h3, h4} {
+        digest.push(u8(word >> 24))
+        digest.push(u8((word >> 16) & 255))
+        digest.push(u8((word >> 8) & 255))
+        digest.push(u8(word & 255))
+    }
+    return digest
+}
+fn _base64(data &[]u8) string {
+    alphabet := "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+    table := alphabet.bytes()
+    var out: Vec<u8> = Vec.with_capacity((data.len() + 2) / 3 * 4)
+    var i = usize(0)
+    for i < data.len() {
+        a := u32(data[i])
+        var b = u32(0)
+        var c = u32(0)
+        if i + 1 < data.len() { b = u32(data[i + 1]) }
+        if i + 2 < data.len() { c = u32(data[i + 2]) }
+        group := (a << 16) | (b << 8) | c
+        out.push(table[usize(group >> 18)])
+        out.push(table[usize((group >> 12) & 63)])
+        if i + 1 < data.len() { out.push(table[usize((group >> 6) & 63)]) } else { out.push(61) }
+        if i + 2 < data.len() { out.push(table[usize(group & 63)]) } else { out.push(61) }
+        i = i + 3
+    }
+    match string.from_utf8(out.as_slice()) { Some(text) => { return text }
+        None => { panic("base64 invariant") } }
+}
+/// RFC 6455 section 4.2.2: the accept value a server must return for `key`.
+pub fn accept_key(key &string) string {
+    joined := key.clone() + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+    digest := _sha1(joined.bytes())
+    return _base64(digest.as_slice())
+}
+
+struct _Target {
+    tls string
+    host string
+    path string
+}
+// `wss://authority[/path][?query]`; no userinfo or fragment.
+fn _target(url &string) Result<_Target, Error> {
+    rest := try _need(string.strip_prefix(url, "wss://"), ErrorKind.InvalidInput)
+    var end = rest.len()
+    var i = usize(0)
+    for i < rest.len() {
+        byte := rest.bytes()[i]
+        if byte == 47 || byte == 63 { end = i
+            break }
+        i = i + 1
+    }
+    if end == 0 { return Err(_fail(ErrorKind.InvalidInput)) }
+    for byte in rest.bytes() {
+        if byte <= 32 || byte >= 127 || byte == 35 { return Err(_fail(ErrorKind.InvalidInput)) }
+    }
+    host := try _need(string.slice(&rest, 0, end), ErrorKind.InvalidInput)
+    if string.contains(&host, "@") { return Err(_fail(ErrorKind.InvalidInput)) }
+    var path = "/"
+    if end < rest.len() {
+        path = try _need(string.slice(&rest, end, rest.len()), ErrorKind.InvalidInput)
+        if rest.bytes()[end] == 63 { path = "/" + &path }
+    }
+    return Ok(_Target{tls: "https://" + &host, host: host, path: path})
+}
+
+/// Opens TLS, performs the HTTP/1.1 upgrade and verifies the server's accept
+/// key. Blocks the current native task; the client starts in blocking mode.
+pub fn connect(url &string, options &Options) Result<Client, Error> {
+    if options.message_limit == 0 || options.message_limit > 67108864 || options.send_limit < 131 { return Err(_fail(ErrorKind.InvalidInput)) }
+    target := try _target(url)
+    var stream = try _lift(net.TlsStream.connect(&target.tls, &options.tls))
+    var nonce = [16]u8{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}
+    try _random(&mut nonce)
+    key := _base64(&nonce)
+    var request = string.Builder.new()
+    request.push("GET ")
+    request.push(&target.path)
+    request.push(" HTTP/1.1\r\nHost: ")
+    request.push(&target.host)
+    request.push("\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: ")
+    request.push(&key)
+    request.push("\r\nSec-WebSocket-Version: 13\r\n")
+    var offered_protocol = false
+    for line in options.headers.as_slice() {
+        if string.starts_with(line, "Sec-WebSocket-Protocol:") || string.starts_with(line, "sec-websocket-protocol:") { offered_protocol = true }
+        request.push(line)
+        request.push("\r\n")
+    }
+    request.push("\r\n")
+    try _lift(stream.write_all(request.finish().bytes()))
+    var input: Vec<u8> = Vec.new()
+    var chunk: Vec<u8> = Vec.with_capacity(4096)
+    for chunk.len() < 4096 { chunk.push(0) }
+    var head = usize(0)
+    for head == 0 {
+        if input.len() >= 16384 { return Err(_fail(ErrorKind.Handshake)) }
+        count := try _lift(stream.read(chunk.as_mut_slice()))
+        if count == 0 { return Err(_fail(ErrorKind.Handshake)) }
+        input.extend_from_slice(&chunk.as_slice()[..count])
+        var i = usize(3)
+        for i < input.len() {
+            if input.at(i - 3) == 13 && input.at(i - 2) == 10 && input.at(i - 1) == 13 && input.at(i) == 10 { head = i + 1
+                break }
+            i = i + 1
+        }
+    }
+    try _verify_response(&input.as_slice()[..head], &accept_key(&key), offered_protocol)
+    return Ok(Client{transport: stream, input: input, start: head, output: Vec.new(), sent: 0, message: Vec.new(), fragment: 0,
+        limit: options.message_limit, send_limit: options.send_limit, received_close: false, sent_close: false, failed: false, nonblocking: false})
+}
+fn _verify_response(head &[]u8, expected &string, offered_protocol bool) Result<void, Error> {
+    text := try _need(string.from_utf8(head), ErrorKind.Handshake)
+    lines := string.split(&text, "\r\n")
+    status := lines.get(0)
+    if !(status == &"HTTP/1.1 101" || string.starts_with(status, "HTTP/1.1 101 ")) { return Err(_fail(ErrorKind.Handshake)) }
+    var upgrade = false
+    var connection = false
+    var accepted = false
+    var i = usize(1)
+    for i < lines.len() {
+        line := lines.get(i)
+        i = i + 1
+        if line.is_empty() { continue }
+        colon := try _need(string.find(line, ":"), ErrorKind.Handshake)
+        name := try _need(string.slice(line, 0, colon), ErrorKind.Handshake)
+        raw := try _need(string.slice(line, colon + 1, line.len()), ErrorKind.Handshake)
+        value := string.trim(&raw)
+        field := name.bytes()
+        if _same(field, "upgrade".bytes()) { upgrade = _same(value.bytes(), "websocket".bytes()) }
+        if _same(field, "connection".bytes()) {
+            tokens := string.split(&value, ",")
+            for token in tokens.as_slice() {
+                if _same(string.trim(token).bytes(), "upgrade".bytes()) { connection = true }
+            }
+        }
+        if _same(field, "sec-websocket-accept".bytes()) {
+            if accepted || &value != expected { return Err(_fail(ErrorKind.Handshake)) }
+            accepted = true
+        }
+        // No extension is ever offered, so none may be accepted.
+        if _same(field, "sec-websocket-extensions".bytes()) { return Err(_fail(ErrorKind.Handshake)) }
+        if _same(field, "sec-websocket-protocol".bytes()) && !offered_protocol { return Err(_fail(ErrorKind.Handshake)) }
+    }
+    if !(upgrade && connection && accepted) { return Err(_fail(ErrorKind.Handshake)) }
+    return Ok(())
+}
+
+/// The TLS stream, borrowed for readiness registration only.
+pub fn Client.stream(&self) &net.TlsStream { return &self.transport }
+pub fn Client.set_nonblocking(&mut self, enabled bool) {
+    self.nonblocking = enabled
+    self.transport.set_nonblocking(enabled)
+}
+/// Encoded bytes queued and not yet written.
+pub fn Client.pending(&self) usize { return self.output.len() - self.sent }
+
+fn Client._queue(&mut self, opcode u8, payload &[]u8) Result<void, Error> {
+    if self.failed { return Err(_fail(ErrorKind.Closed)) }
+    if self.sent == self.output.len() {
+        self.output = Vec.new()
+        self.sent = 0
+    }
+    if payload.len() > self.send_limit || self.pending() + payload.len() + 14 > self.send_limit { return Err(_fail(ErrorKind.TooLarge)) }
+    var mask = [4]u8{0, 0, 0, 0}
+    try _random(&mut mask)
+    self.output.push(128 | opcode)
+    length := payload.len()
+    if length < 126 { self.output.push(128 | u8(length))
+    } else if length < 65536 {
+        self.output.push(254)
+        self.output.push(u8(length >> 8))
+        self.output.push(u8(length & 255))
+    } else {
+        self.output.push(255)
+        var shift = u64(56)
+        for {
+            self.output.push(u8((u64(length) >> shift) & 255))
+            if shift == 0 { break }
+            shift = shift - 8
+        }
+    }
+    self.output.extend_from_slice(&mask)
+    var i = usize(0)
+    for i < length {
+        self.output.push(payload[i] ^ mask[i % 4])
+        i = i + 1
+    }
+    return Ok(())
+}
+/// Writes queued frames. Blocking clients write everything; nonblocking
+/// clients write what the stream accepts and report whether the queue is empty.
+pub fn Client.flush(&mut self) Result<bool, Error> {
+    if self.failed { return Err(_fail(ErrorKind.Closed)) }
+    for self.sent < self.output.len() {
+        match self.transport.write(&self.output.as_slice()[self.sent..]) {
+            Ok(count) => {
+                if count == 0 { self.failed = true
+                    return Err(_io(io.Error.new(io.ErrorKind.WriteZero))) }
+                self.sent = self.sent + count
+            }
+            Err(error) => {
+                if _blocked(error) { return Ok(false) }
+                self.failed = true
+                return Err(_io(error))
+            }
+        }
+    }
+    return Ok(true)
+}
+fn Client._send(&mut self, opcode u8, payload &[]u8) Result<void, Error> {
+    if self.sent_close { return Err(_fail(ErrorKind.Closed)) }
+    try self._queue(opcode, payload)
+    try self.flush()
+    return Ok(())
+}
+pub fn Client.send_text(&mut self, text &string) Result<void, Error> { return self._send(1, text.bytes()) }
+pub fn Client.send_binary(&mut self, data &[]u8) Result<void, Error> { return self._send(2, data) }
+pub fn Client.ping(&mut self, data &[]u8) Result<void, Error> {
+    if data.len() > 125 { return Err(_fail(ErrorKind.InvalidInput)) }
+    return self._send(9, data)
+}
+/// Starts the closing handshake; keep calling `receive` until it returns the
+/// peer's Close. Codes follow RFC 6455 section 7.4; the reason is UTF-8.
+pub fn Client.close(&mut self, code u16, reason &string) Result<void, Error> {
+    if !_sendable_code(code) || reason.len() > 123 { return Err(_fail(ErrorKind.InvalidInput)) }
+    var payload: Vec<u8> = Vec.with_capacity(2 + reason.len())
+    payload.push(u8(code >> 8))
+    payload.push(u8(code & 255))
+    payload.extend_from_slice(reason.bytes())
+    try self._send(8, payload.as_slice())
+    self.sent_close = true
+    return Ok(())
+}
+fn _sendable_code(code u16) bool { return (code >= 1000 && code <= 1003) || (code >= 1007 && code <= 1011) || (code >= 3000 && code <= 4999) }
+
+fn Client._protocol(&mut self) Error {
+    self.failed = true
+    return _fail(ErrorKind.Protocol)
+}
+/// Next complete message. Pings are answered and pongs consumed internally.
+/// A nonblocking client returns a WouldBlock error (`would_block`) when no
+/// complete message is buffered; partial frames are kept for the next call.
+pub fn Client.receive(&mut self) Result<Message, Error> {
+    if self.failed || self.received_close { return Err(_fail(ErrorKind.Closed)) }
+    var chunk: Vec<u8> = Vec.new()
+    for {
+        match self.flush() { Ok(value) => {}
+            Err(error) => { return Err(error) } }
+        available := self.input.len() - self.start
+        if available >= 2 {
+            b0 := self.input.at(self.start)
+            b1 := self.input.at(self.start + 1)
+            if (b0 & 112) != 0 || (b1 & 128) != 0 { return Err(self._protocol()) }
+            var header = usize(2)
+            var length = u64(b1 & 127)
+            if length == 126 { header = 4 }
+            if length == 127 { header = 10 }
+            if available >= header {
+                if header == 4 { length = (u64(self.input.at(self.start + 2)) << 8) | u64(self.input.at(self.start + 3)) }
+                if header == 10 {
+                    length = 0
+                    var j = usize(2)
+                    for j < 10 {
+                        if j == 2 && self.input.at(self.start + 2) >= 128 { return Err(self._protocol()) }
+                        length = (length << 8) | u64(self.input.at(self.start + j))
+                        j = j + 1
+                    }
+                }
+                fin := (b0 & 128) != 0
+                opcode := b0 & 15
+                if opcode >= 8 && (!fin || length > 125) { return Err(self._protocol()) }
+                if length > u64(self.limit) || u64(self.message.len()) + length > u64(self.limit) {
+                    self.failed = true
+                    return Err(_fail(ErrorKind.TooLarge))
+                }
+                if u64(available) >= u64(header) + length {
+                    begin := self.start + header
+                    end := begin + usize(length)
+                    self.start = end
+                    match try self._frame(fin, opcode, begin, end) { Some(message) => { return Ok(message) }
+                        None => { continue } }
+                }
+            }
+        }
+        // Compact before growing; the unconsumed suffix is at most one frame.
+        if self.start > 0 && self.start * 2 >= self.input.len() {
+            var rest: Vec<u8> = Vec.with_capacity(self.input.len() - self.start + 16384)
+            rest.extend_from_slice(&self.input.as_slice()[self.start..])
+            self.input = rest
+            self.start = 0
+        }
+        if chunk.len() == 0 { for chunk.len() < 16384 { chunk.push(0) } }
+        match self.transport.read(chunk.as_mut_slice()) {
+            Ok(count) => {
+                if count == 0 { self.failed = true
+                    return Err(_io(io.Error.new(io.ErrorKind.UnexpectedEof))) }
+                self.input.extend_from_slice(&chunk.as_slice()[..count])
+            }
+            Err(error) => {
+                if !_blocked(error) { self.failed = true }
+                return Err(_io(error))
+            }
+        }
+    }
+}
+fn Client._frame(&mut self, fin bool, opcode u8, begin usize, end usize) Result<Option<Message>, Error> {
+    var payload: Vec<u8> = Vec.with_capacity(end - begin)
+    payload.extend_from_slice(&self.input.as_slice()[begin..end])
+    if opcode == 9 {
+        if !self.sent_close { try self._queue(10, payload.as_slice()) }
+        return Ok(None)
+    }
+    if opcode == 10 { return Ok(None) }
+    if opcode == 8 {
+        self.received_close = true
+        var code = u16(1005)
+        var reason = ""
+        if payload.len() == 1 { return Err(self._protocol()) }
+        if payload.len() >= 2 {
+            code = (u16(payload.at(0)) << 8) | u16(payload.at(1))
+            if !_sendable_code(code) { return Err(self._protocol()) }
+            match string.from_utf8(&payload.as_slice()[2..]) { Some(text) => { reason = text }
+                None => { return Err(self._protocol()) } }
+        }
+        if !self.sent_close {
+            // Echo the code, then best effort: a nonblocking client keeps the
+            // rest queued for `flush`.
+            var echo: Vec<u8> = Vec.new()
+            if payload.len() >= 2 { echo.extend_from_slice(&payload.as_slice()[..2]) }
+            try self._queue(8, echo.as_slice())
+            self.sent_close = true
+            match self.flush() { Ok(value) => {}
+                Err(error) => {} }
+        }
+        return Ok(Some(Message.Close(code, reason)))
+    }
+    if opcode == 0 {
+        if self.fragment == 0 { return Err(self._protocol()) }
+        self.message.extend_from_slice(payload.as_slice())
+        if !fin { return Ok(None) }
+        kind := self.fragment
+        self.fragment = 0
+        // No field take exists in v0: copy out, then release the fragments.
+        var whole: Vec<u8> = Vec.with_capacity(self.message.len())
+        whole.extend_from_slice(self.message.as_slice())
+        self.message = Vec.new()
+        return self._data(kind, whole)
+    }
+    if opcode == 1 || opcode == 2 {
+        if self.fragment != 0 { return Err(self._protocol()) }
+        if fin { return self._data(opcode, payload) }
+        self.fragment = opcode
+        self.message = payload
+        return Ok(None)
+    }
+    return Err(self._protocol())
+}
+fn Client._data(&mut self, opcode u8, payload Vec<u8>) Result<Option<Message>, Error> {
+    if opcode == 2 { return Ok(Some(Message.Binary(payload))) }
+    match string.from_utf8(payload.as_slice()) { Some(text) => { return Ok(Some(Message.Text(text))) }
+        None => {
+            self.failed = true
+            return Err(_fail(ErrorKind.InvalidUtf8))
+        } }
+}

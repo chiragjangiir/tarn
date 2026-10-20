@@ -79,3 +79,12 @@ fn tls_stream_is_persistent_duplex_verified_and_released_once() {
     assert!(output.status.success(), "{}\n{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
     std::fs::remove_dir_all(fixture.parent().unwrap()).unwrap();
 }
+
+#[test]
+fn websocket_client_frames_fragments_closes_and_rejects_violations() {
+    let fixture = build(&root().join("tests/native/pass/websocket_fixture.tarn"), "websocket");
+    let output = Command::new("python3").arg(root().join("tests/integration/websocket_fixture.py"))
+        .arg(&fixture).output().unwrap();
+    assert!(output.status.success(), "{}\n{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+    std::fs::remove_dir_all(fixture.parent().unwrap()).unwrap();
+}

@@ -892,7 +892,7 @@ ADR 0041. Trusted stdlib modules are core, io, time, net, runtime, fs, process
 and ffi, embedded in the driver (`TRUSTED_STDLIB`). Layers: time and net build
 on io; runtime builds on io, time and net; fs and process build on io; ffi is
 standalone; no import cycles. Ordinary stdlib modules (http, https, path,
-string, json, os, console, collections, csv) are plain Tarn with no intrinsic
+string, json, os, console, collections, csv, websocket) are plain Tarn with no intrinsic
 authority (`ORDINARY_STDLIB`). Private access follows that graph downward only:
 never above or beside, and never from user modules. Do not hardcode a module name in compiler phases; look declarations up
 in their module through `Decls`. Native intrinsics are `<layer>._<operation>`.
