@@ -1,6 +1,6 @@
 # ADR 0067: RFC 6455 WebSocket client as ordinary Tarn over TlsStream
 
-Status: accepted and implemented (Phase 35). Builds on ADR 0066.
+Status: accepted and implemented (Phase 36). Builds on ADR 0066.
 
 ## Evidence
 

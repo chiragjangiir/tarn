@@ -212,7 +212,7 @@ original failure. Dropping Connecting closes the incomplete stream normally.
 See [ADR 0035](adr/0035-nonblocking-readiness.md). No async syntax, pending kernel
 buffer I/O, io_uring, HTTP, TLS or channels are implemented by Phase 12B.
 
-## Persistent TLS streams (Phase 34)
+## Persistent TLS streams (Phase 35)
 
 `net.TlsStream.connect(&"https://host:port", &net.TlsOptions.new())` opens a
 verified TLS client stream through system libcurl in connect-only mode. It is

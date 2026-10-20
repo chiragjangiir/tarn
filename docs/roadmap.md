@@ -54,8 +54,8 @@ tested and documented.
 
 | 32 | Offset text traversal, integer Builder allocation removal and UTF-8 CLI | implemented scoped subset: [report](phase-32-33-report.md), [ADR 0061](adr/0061-offset-text-traversal.md) |
 | 33 | Bounded system HTTPS and selected-ticket classification CLI | implemented scoped subset: [report](phase-32-33-report.md), [ADR 0062](adr/0062-bounded-system-https.md); local TLS acceptance, not a full Go application port |
-| 34 | Persistent TLS client streams (`net.TlsStream`) over libcurl connect-only | implemented: [ADR 0066](adr/0066-persistent-tls-streams.md); local TLS echo acceptance; WebSocket, async handshake and ALPN remain future work |
-| 35 | RFC 6455 WebSocket client (`websocket`) as ordinary Tarn over `TlsStream` | implemented: [ADR 0067](adr/0067-websocket-client.md), [guide](websocket.md); local TLS WebSocket acceptance; no compression or async variants |
+| 35 | Persistent TLS client streams (`net.TlsStream`) over libcurl connect-only | implemented: [ADR 0066](adr/0066-persistent-tls-streams.md); local TLS echo acceptance; WebSocket, async handshake and ALPN remain future work |
+| 36 | RFC 6455 WebSocket client (`websocket`) as ordinary Tarn over `TlsStream` | implemented: [ADR 0067](adr/0067-websocket-client.md), [guide](websocket.md); local TLS WebSocket acceptance; no compression or async variants |
 
 ## Milestones
 

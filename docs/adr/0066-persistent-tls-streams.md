@@ -1,6 +1,6 @@
 # ADR 0066: persistent TLS client streams through libcurl connect-only
 
-Status: accepted and implemented (Phase 34). Extends ADR 0062.
+Status: accepted and implemented (Phase 35). Extends ADR 0062.
 
 ## Evidence
 
