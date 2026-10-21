@@ -1,0 +1,105 @@
+// Text encodings of bytes (ADR 0076): strict RFC 4648 Base64 and lowercase
+// hexadecimal. Ordinary Tarn with no intrinsic authority.
+import "string"
+
+/// Why Base64 text was rejected. Positions are byte offsets into the text.
+pub enum Base64Error {
+    /// A byte outside the standard alphabet, or `=` before the padding.
+    InvalidCharacter(usize)
+    /// The length is not a multiple of four.
+    InvalidLength
+    /// Malformed `=` padding, or nonzero bits after the last byte, which
+    /// would let two different texts decode to the same bytes.
+    InvalidPadding
+    /// The decoded size would exceed the caller's limit.
+    TooLarge
+}
+
+fn _alphabet() string { return "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/" }
+
+/// Standard Base64 with `=` padding, no line breaks.
+pub fn base64_encode(data &[]u8) string {
+    alphabet := _alphabet()
+    table := alphabet.bytes()
+    var out: Vec<u8> = Vec.with_capacity((data.len() + 2) / 3 * 4)
+    var i = usize(0)
+    for i < data.len() {
+        a := u32(data[i])
+        var b = u32(0)
+        var c = u32(0)
+        if i + 1 < data.len() { b = u32(data[i + 1]) }
+        if i + 2 < data.len() { c = u32(data[i + 2]) }
+        group := (a << 16) | (b << 8) | c
+        out.push(table[usize(group >> 18)])
+        out.push(table[usize((group >> 12) & 63)])
+        if i + 1 < data.len() { out.push(table[usize((group >> 6) & 63)]) } else { out.push(61) }
+        if i + 2 < data.len() { out.push(table[usize(group & 63)]) } else { out.push(61) }
+        i = i + 3
+    }
+    match string.from_utf8(out.as_slice()) { Some(text) => { return text }
+        None => { panic("base64 encoding invariant") } }
+}
+
+fn _sextet(byte u8) i32 {
+    if byte >= 65 && byte <= 90 { return i32(byte) - 65 }
+    if byte >= 97 && byte <= 122 { return i32(byte) - 71 }
+    if byte >= 48 && byte <= 57 { return i32(byte) + 4 }
+    if byte == 43 { return 62 }
+    if byte == 47 { return 63 }
+    return -1
+}
+
+/// Strict standard Base64 (RFC 4648 section 4): padding required, no
+/// whitespace or URL-safe alphabet, canonical trailing bits. The decoded size
+/// is checked against `limit` before any allocation.
+pub fn base64_decode(text &string, limit usize) Result<Vec<u8>, Base64Error> {
+    bytes := text.bytes()
+    n := bytes.len()
+    if n % 4 != 0 { return Err(Base64Error.InvalidLength) }
+    var padding = usize(0)
+    if n > 0 && bytes[n - 1] == 61 { padding = 1 }
+    if n > 1 && bytes[n - 2] == 61 {
+        if padding == 0 { return Err(Base64Error.InvalidPadding) }
+        padding = 2
+    }
+    if n > 2 && bytes[n - 3] == 61 { return Err(Base64Error.InvalidPadding) }
+    size := n / 4 * 3 - padding
+    if size > limit { return Err(Base64Error.TooLarge) }
+    var out: Vec<u8> = Vec.with_capacity(size)
+    var i = usize(0)
+    for i < n {
+        var group = u32(0)
+        var j = usize(0)
+        for j < 4 {
+            at := i + j
+            var value = i32(0)
+            if at < n - padding {
+                value = _sextet(bytes[at])
+                if value < 0 { return Err(Base64Error.InvalidCharacter(at)) }
+            }
+            group = (group << 6) | u32(value)
+            j = j + 1
+        }
+        out.push(u8(group >> 16))
+        if i + 4 < n || padding < 2 { out.push(u8((group >> 8) & 255)) }
+        if i + 4 < n || padding < 1 { out.push(u8(group & 255)) }
+        i = i + 4
+    }
+    // Bits that encode nothing must be zero (canonical form).
+    if padding == 2 && (_sextet(bytes[n - 3]) & 15) != 0 { return Err(Base64Error.InvalidPadding) }
+    if padding == 1 && (_sextet(bytes[n - 2]) & 3) != 0 { return Err(Base64Error.InvalidPadding) }
+    return Ok(out)
+}
+
+/// Lowercase hexadecimal, two digits per byte.
+pub fn hex(data &[]u8) string {
+    digits := "0123456789abcdef"
+    table := digits.bytes()
+    var out: Vec<u8> = Vec.with_capacity(data.len() * 2)
+    for byte in data {
+        out.push(table[usize(byte >> 4)])
+        out.push(table[usize(byte & 15)])
+    }
+    match string.from_utf8(out.as_slice()) { Some(text) => { return text }
+        None => { panic("hex encoding invariant") } }
+}

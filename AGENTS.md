@@ -895,7 +895,8 @@ and ffi, embedded in the driver (`TRUSTED_STDLIB`). Layers: time and net build
 on io; runtime builds on io, time and net; fs builds on io; process builds on io,
 net and fs (ADR 0070, 0071); ffi is
 standalone; no import cycles. Ordinary stdlib modules (http, https, path,
-string, json, os, console, collections, csv, websocket) are plain Tarn with no intrinsic
+string, json, os, console, collections, csv, websocket, encoding, crypto) are plain
+Tarn with no intrinsic
 authority (`ORDINARY_STDLIB`). Private access follows that graph downward only:
 never above or beside, and never from user modules. Do not hardcode a module name in compiler phases; look declarations up
 in their module through `Decls`. Native intrinsics are `<layer>._<operation>`.

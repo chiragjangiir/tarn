@@ -1,0 +1,46 @@
+// ADR 0076: FIPS 180-4 SHA-256 vectors plus padding block boundaries.
+import "crypto"
+import "encoding"
+
+fn repeated(byte u8, count usize) Vec<u8> {
+    var data: Vec<u8> = Vec.with_capacity(count)
+    for data.len() < count { data.push(byte) }
+    return data
+}
+fn digest_hex(data &[]u8) string {
+    digest := crypto.sha256(data)
+    return encoding.hex(&digest)
+}
+
+fn test_sha256_fips_vectors() {
+    if digest_hex("".bytes()) != "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855" { panic("empty digest") }
+    if digest_hex("abc".bytes()) != "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad" { panic("abc digest") }
+    long := "abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq"
+    if digest_hex(long.bytes()) != "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1" { panic("448-bit digest") }
+    million := repeated(97, 1000000)
+    if digest_hex(million.as_slice()) != "cdc76e5c9914fb9281a1c7e284d73e67f1809a48a497200e046d39ccc7112cd0" { panic("million-a digest") }
+}
+
+fn test_sha256_padding_block_boundaries() {
+    lengths := [5]usize{55, 56, 63, 64, 119}
+    expected := [5]string{
+        "9f4390f8d30c2dd92ec9f095b65e2b9ae9b0a925a5258e241c9f1e910f734318",
+        "b35439a4ac6f0948b6d6f9e3c6af0f5f590ce20f1bde7090ef7970686ec6738a",
+        "7d3e74a05d7db15bce4ad9ec0658ea98e3f06eeecf16b4c6fff2da457ddc2f34",
+        "ffe054fe7ae0cb6dc65c3af9b61d5209f439851db43d0ba5997337df154668eb",
+        "31eba51c313a5c08226adf18d4a359cfdfd8d2e816b13f4af952f7ea6584dcfb"
+    }
+    var index = usize(0)
+    for index < 5 {
+        data := repeated(97, lengths[index])
+        if digest_hex(data.as_slice()) != expected[index] { panic("boundary digest differs") }
+        index = index + 1
+    }
+    var every: Vec<u8> = Vec.with_capacity(256)
+    var value = u32(0)
+    for value < 256 {
+        every.push(u8(value))
+        value = value + 1
+    }
+    if digest_hex(every.as_slice()) != "40aff2e9d2d8922e47afd4648e6967497158785fbd1da870e7110266bf944880" { panic("all-bytes digest") }
+}

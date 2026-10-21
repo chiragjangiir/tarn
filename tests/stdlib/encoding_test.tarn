@@ -1,0 +1,85 @@
+// ADR 0076: RFC 4648 Base64 vectors, strict rejection and the size limit.
+import "encoding"
+import "string"
+
+fn decoded(text &string) string {
+    match encoding.base64_decode(text, 1048576) {
+        Ok(bytes) => {
+            match string.from_utf8(bytes.as_slice()) { Some(value) => { return value }
+                None => { return "<binary>" } }
+        }
+        Err(error) => { return "<error>" }
+    }
+}
+fn rejection(text &string, limit usize) string {
+    match encoding.base64_decode(text, limit) {
+        Ok(bytes) => { return "accepted" }
+        Err(error) => {
+            match error {
+                encoding.Base64Error.InvalidCharacter(at) => { return "character " + &string.from_u64(u64(at)) }
+                encoding.Base64Error.InvalidLength => { return "length" }
+                encoding.Base64Error.InvalidPadding => { return "padding" }
+                encoding.Base64Error.TooLarge => { return "too large" }
+            }
+        }
+    }
+}
+
+fn test_base64_rfc4648_vectors_roundtrip() {
+    plain := [7]string{"", "f", "fo", "foo", "foob", "fooba", "foobar"}
+    coded := [7]string{"", "Zg==", "Zm8=", "Zm9v", "Zm9vYg==", "Zm9vYmE=", "Zm9vYmFy"}
+    var index = usize(0)
+    for index < 7 {
+        if encoding.base64_encode(plain[index].bytes()) != coded[index] { panic("encode vector differs") }
+        if decoded(&coded[index]) != plain[index] { panic("decode vector differs") }
+        index = index + 1
+    }
+}
+
+fn test_base64_binary_roundtrip_all_bytes() {
+    var every: Vec<u8> = Vec.with_capacity(256)
+    var value = u32(0)
+    for value < 256 {
+        every.push(u8(value))
+        value = value + 1
+    }
+    text := encoding.base64_encode(every.as_slice())
+    match encoding.base64_decode(&text, 256) {
+        Ok(bytes) => {
+            if bytes.len() != 256 { panic("binary length differs") }
+            var i = usize(0)
+            for i < 256 {
+                if bytes.at(i) != u8(i) { panic("binary byte differs") }
+                i = i + 1
+            }
+        }
+        Err(error) => { panic("binary roundtrip rejected") }
+    }
+}
+
+fn test_base64_rejects_malformed_text_precisely() {
+    if rejection(&"Zm9", 64) != "length" { panic("short length") }
+    if rejection(&"Zm9v\n", 64) != "length" { panic("newline length") }
+    if rejection(&"Zm9!", 64) != "character 3" { panic("invalid character") }
+    if rejection(&"Zm 9", 64) != "character 2" { panic("space") }
+    if rejection(&"Zm-_", 64) != "character 2" { panic("url-safe alphabet") }
+    if rejection(&"Z===", 64) != "padding" { panic("three padding") }
+    if rejection(&"Zg=a", 64) != "padding" { panic("padding before data") }
+    if rejection(&"Zg==Zm9v", 64) != "character 2" { panic("interior padding") }
+    // Nonzero bits after the final byte: "Zh==" would also decode to "f".
+    if rejection(&"Zh==", 64) != "padding" { panic("noncanonical two-pad") }
+    if rejection(&"Zm9=", 64) != "padding" { panic("noncanonical one-pad") }
+}
+
+fn test_base64_limit_is_checked_before_decoding() {
+    if rejection(&"Zm9vYmFy", 6) != "accepted" { panic("exact limit") }
+    if rejection(&"Zm9vYmFy", 5) != "too large" { panic("over limit") }
+    if rejection(&"Zm9vYg==", 4) != "accepted" { panic("padded exact limit") }
+    if rejection(&"Zm9vYg==", 3) != "too large" { panic("padded over limit") }
+    if rejection(&"", 0) != "accepted" { panic("empty") }
+}
+
+fn test_hex_is_lowercase_two_digits() {
+    if encoding.hex(&[4]u8{0, 15, 160, 255}) != "000fa0ff" { panic("hex digits") }
+    if encoding.hex("".bytes()) != "" { panic("empty hex") }
+}

@@ -22,6 +22,8 @@ const ORDINARY_STDLIB: &[(&str, &str)] = &[
     ("collections", include_str!("../../../stdlib/collections/collections.tarn")),
     ("csv", include_str!("../../../stdlib/csv/csv.tarn")),
     ("websocket", include_str!("../../../stdlib/websocket/websocket.tarn")),
+    ("encoding", include_str!("../../../stdlib/encoding/encoding.tarn")),
+    ("crypto", include_str!("../../../stdlib/crypto/crypto.tarn")),
 ];
 
 const CORE_SOURCE: &str = include_str!("../../../stdlib/core/core.tarn");

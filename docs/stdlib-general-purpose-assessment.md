@@ -195,8 +195,9 @@ verification failures, redirects, truncated bodies, limits and timeout cleanup.
 ### Everyday data utilities: medium to high priority
 
 No public standard APIs were found for random generation, secure random bytes,
-Base64, hashing, cryptography, regular expressions, compression or structured
-logging. These affect identifiers, protocols, integrity checks and observability.
+general cryptography, regular expressions, compression or structured logging.
+Strict Base64, hexadecimal and SHA-256 now exist in `encoding` and `crypto`
+(ADR 0076). These affect identifiers, protocols, integrity checks and observability.
 
 Separate deterministic application hashing from cryptographic hashing and
 noncryptographic randomness from secure randomness. A public security-sensitive

@@ -1,0 +1,94 @@
+// Cryptographic digests (ADR 0076). Ordinary Tarn with no intrinsic
+// authority; FIPS 180-4 SHA-256 only. No HMAC, ciphers or streaming yet.
+
+fn _rotr(value u32, count u32) u32 { return (value >> count) | (value << (32 - count)) }
+
+/// The SHA-256 digest of `data` (FIPS 180-4).
+pub fn sha256(data &[]u8) [32]u8 {
+    k := [64]u32{
+        1116352408, 1899447441, 3049323471, 3921009573, 961987163, 1508970993, 2453635748, 2870763221,
+        3624381080, 310598401, 607225278, 1426881987, 1925078388, 2162078206, 2614888103, 3248222580,
+        3835390401, 4022224774, 264347078, 604807628, 770255983, 1249150122, 1555081692, 1996064986,
+        2554220882, 2821834349, 2952996808, 3210313671, 3336571891, 3584528711, 113926993, 338241895,
+        666307205, 773529912, 1294757372, 1396182291, 1695183700, 1986661051, 2177026350, 2456956037,
+        2730485921, 2820302411, 3259730800, 3345764771, 3516065817, 3600352804, 4094571909, 275423344,
+        430227734, 506948616, 659060556, 883997877, 958139571, 1322822218, 1537002063, 1747873779,
+        1955562222, 2024104815, 2227730452, 2361852424, 2428436474, 2756734187, 3204031479, 3329325298
+    }
+    var h = [8]u32{1779033703, 3144134277, 1013904242, 2773480762, 1359893119, 2600822924, 528734635, 1541459225}
+    var message: Vec<u8> = Vec.with_capacity(data.len() + 72)
+    message.extend_from_slice(data)
+    message.push(128)
+    for message.len() % 64 != 56 { message.push(0) }
+    bits := u64(data.len()) * 8
+    var shift = u64(56)
+    for {
+        message.push(u8((bits >> shift) & 255))
+        if shift == 0 { break }
+        shift = shift - 8
+    }
+    var w = [64]u32{
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+    }
+    var offset = usize(0)
+    for offset < message.len() {
+        var i = usize(0)
+        for i < 16 {
+            at := offset + i * 4
+            w[i] = (u32(message.at(at)) << 24) | (u32(message.at(at + 1)) << 16) | (u32(message.at(at + 2)) << 8) | u32(message.at(at + 3))
+            i = i + 1
+        }
+        for i < 64 {
+            s0 := _rotr(w[i - 15], 7) ^ _rotr(w[i - 15], 18) ^ (w[i - 15] >> 3)
+            s1 := _rotr(w[i - 2], 17) ^ _rotr(w[i - 2], 19) ^ (w[i - 2] >> 10)
+            w[i] = w[i - 16].wrapping_add(s0).wrapping_add(w[i - 7]).wrapping_add(s1)
+            i = i + 1
+        }
+        var a = h[0]
+        var b = h[1]
+        var c = h[2]
+        var d = h[3]
+        var e = h[4]
+        var f = h[5]
+        var g = h[6]
+        var hh = h[7]
+        i = 0
+        for i < 64 {
+            s1 := _rotr(e, 6) ^ _rotr(e, 11) ^ _rotr(e, 25)
+            choice := (e & f) ^ ((e ^ 4294967295) & g)
+            first := hh.wrapping_add(s1).wrapping_add(choice).wrapping_add(k[i]).wrapping_add(w[i])
+            s0 := _rotr(a, 2) ^ _rotr(a, 13) ^ _rotr(a, 22)
+            majority := (a & b) ^ (a & c) ^ (b & c)
+            second := s0.wrapping_add(majority)
+            hh = g
+            g = f
+            f = e
+            e = d.wrapping_add(first)
+            d = c
+            c = b
+            b = a
+            a = first.wrapping_add(second)
+            i = i + 1
+        }
+        h[0] = h[0].wrapping_add(a)
+        h[1] = h[1].wrapping_add(b)
+        h[2] = h[2].wrapping_add(c)
+        h[3] = h[3].wrapping_add(d)
+        h[4] = h[4].wrapping_add(e)
+        h[5] = h[5].wrapping_add(f)
+        h[6] = h[6].wrapping_add(g)
+        h[7] = h[7].wrapping_add(hh)
+        offset = offset + 64
+    }
+    var digest = [32]u8{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}
+    var word = usize(0)
+    for word < 8 {
+        digest[word * 4] = u8(h[word] >> 24)
+        digest[word * 4 + 1] = u8((h[word] >> 16) & 255)
+        digest[word * 4 + 2] = u8((h[word] >> 8) & 255)
+        digest[word * 4 + 3] = u8(h[word] & 255)
+        word = word + 1
+    }
+    return digest
+}
