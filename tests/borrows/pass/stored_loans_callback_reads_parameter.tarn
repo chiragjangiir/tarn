@@ -1,0 +1,10 @@
+struct Session { value i32 }
+fn scoped(body mut fn(&Session)) {
+    local := Session{value: 42}
+    body(&local)
+}
+fn main() {
+    var seen = 0
+    scoped(fn(s &Session) { seen = s.value })
+    print(seen)
+}

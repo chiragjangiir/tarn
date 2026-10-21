@@ -1,0 +1,9 @@
+error[E4210]: cannot keep parameter `s` in captured `saved`
+ --> tests/borrows/fail/E4210_callback_parameter_into_capture.tarn:8:29
+  |
+8 |     scoped(fn(s &Session) { saved = Some(s) })
+  |                             ^^^^^^^^^^^^^^^ `s` would outlive this call
+  |
+  = note: a callable's reference parameters are only borrowed for the duration of each call
+  = help: copy or clone the data you need, or keep owned values in the captured state
+

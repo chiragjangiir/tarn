@@ -1,0 +1,10 @@
+struct Session { value i32 }
+fn scoped(body mut fn(&Session)) {
+    local := Session{value: 42}
+    body(&local)
+}
+fn main() {
+    var saved: Option<&Session> = None
+    var keep = move fn(s &Session) { saved = Some(s) }
+    scoped(keep)
+}

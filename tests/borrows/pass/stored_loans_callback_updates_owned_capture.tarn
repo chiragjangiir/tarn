@@ -1,0 +1,14 @@
+struct Session { value i32 }
+fn each(items &[]Session, body mut fn(&Session)) {
+    for item in items { body(item) }
+}
+fn main() {
+    sessions := [2]Session{Session{value: 1}, Session{value: 2}}
+    var total = 0
+    var names: Vec<i32> = Vec.new()
+    each(&sessions, fn(s &Session) {
+        total = total + s.value
+        names.push(s.value)
+    })
+    print(total)
+}

@@ -100,6 +100,10 @@ two-phase-borrow concept.
 - `impl` methods must not return borrows their interface does not allow (E4204).
 - Storing a borrow of a local into memory reached through a reference
   (`out.value = &local`) is E4207.
+- Store summaries (ADR 0068): which arguments a function may keep behind
+  which mutable argument. A call that may keep a local's loan behind a caller
+  parameter is E4207; a closure keeping a call parameter in captured state is
+  E4210.
 
 ## Closures
 
@@ -126,4 +130,5 @@ move while borrowed · E4104 use while mutably borrowed · E4105 does not live
 long enough / dropped while borrowed · E4201 returned reference to local ·
 E4202 ambiguous provenance · E4203 reference in a field · E4204 impl
 provenance mismatch · E4205 closure escapes a borrow · E4206 reference passed
-to `spawn` · E4207 borrow escapes through a reference.
+to `spawn` · E4207 borrow escapes through a reference · E4210 callable
+parameter kept in captured state.

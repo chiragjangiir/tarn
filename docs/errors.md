@@ -177,7 +177,9 @@ stream them:
 | E4205 | `closure_escapes_borrow` | returned closure captures `k` by reference |
 | E4206 | `reference_to_spawned_task` | unscoped spawn cannot receive borrowed captures/references in 11A |
 | E4208 | `scoped_task_escape` | scoped task handles must remain and complete in their creating scope |
-| E4207 | `borrow_escapes_through_reference` | cannot store a reference to `x` into `out.f` |
+| E4207 | `borrow_escapes_through_reference` | cannot store a reference to `x` into `out.f`, directly or through a call that may keep it (ADR 0068) |
+| E4209 | `borrow_in_async_task` | a spawned async task may borrow only the Execution it runs on |
+| E4210 | `callable_parameter_escapes` | a closure keeps one of its reference parameters in captured state (ADR 0068) |
 
 Golden tests in `tests/**/fail/*.tarn` pin the rendered text of each code.
 

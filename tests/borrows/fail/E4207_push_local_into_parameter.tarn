@@ -1,0 +1,10 @@
+struct Session { value i32 }
+fn scoped(out &mut Vec<&Session>) {
+    local := Session{value: 42}
+    out.push(&local)
+}
+fn main() {
+    var saved: Vec<&Session> = Vec.new()
+    scoped(&mut saved)
+    print(saved.get(0).value)
+}

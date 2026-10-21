@@ -49,6 +49,11 @@ pub struct Loan {
 /// Argument positions (receiver first) whose loans a function's result may carry.
 pub type Provenance = Vec<usize>;
 
+/// Stored-loan effects (ADR 0068): `(src, dst)` argument positions such that
+/// loans of argument `src` may be kept behind mutable argument `dst` after the
+/// call returns. Sorted and deduplicated.
+pub type Stores = Vec<(usize, usize)>;
+
 #[derive(Debug, Default)]
 pub struct FnBorrows {
     pub loans: Vec<Loan>,
@@ -110,6 +115,10 @@ struct Fx<'a> {
     t: &'a Typed,
     /// Shared provenance table; the fixpoint updates it between analyses.
     prov: &'a RwLock<HashMap<FunctionId, Provenance>>,
+    /// Shared store-summary table (ADR 0068), updated by its own fixpoint.
+    stores: &'a RwLock<HashMap<FunctionId, Stores>>,
+    /// Store pairs found by the current pass, with the first statement causing each.
+    found: std::collections::BTreeMap<(usize, usize), Span>,
     /// `Execution.spawn`, whose computation may borrow only its Execution.
     spawn_fn: Option<FunctionId>,
     loans: Vec<Loan>,
@@ -169,9 +178,9 @@ fn operand_place(o: &Operand) -> Option<&Place> {
 }
 
 impl<'a> Fx<'a> {
-    fn new(f: &'a Function, t: &'a Typed, prov: &'a RwLock<HashMap<FunctionId, Provenance>>) -> Self {
+    fn new(f: &'a Function, t: &'a Typed, prov: &'a RwLock<HashMap<FunctionId, Provenance>>, stores: &'a RwLock<HashMap<FunctionId, Stores>>) -> Self {
         let mut fx =
-            Fx { f, t, prov, spawn_fn: None, loans: Vec::new(), loan_at: HashMap::new(), nl: f.locals.len(), live: Vec::new(), live_out: Vec::new(), holds_loans: Vec::new(), resource: Vec::new(), diags: Vec::new(), reported: HashSet::new() };
+            Fx { f, t, prov, stores, found: std::collections::BTreeMap::new(), spawn_fn: None, loans: Vec::new(), loan_at: HashMap::new(), nl: f.locals.len(), live: Vec::new(), live_out: Vec::new(), holds_loans: Vec::new(), resource: Vec::new(), diags: Vec::new(), reported: HashSet::new() };
         // Deep types make these structural queries costly; ask once per local.
         fx.holds_loans = f.locals.iter().map(|l| t.decls.may_contain_references(&l.ty) || t.decls.contains_task(&l.ty)).collect();
         fx.resource = f.locals.iter().map(|l| t.decls.contains_task(&l.ty) || t.decls.contains_loan_resource(&l.ty)).collect();
@@ -475,6 +484,10 @@ impl<'a> Fx<'a> {
             match &s.kind {
                 StatementKind::Assign(dest, rv) => {
                     let inflow = self.rvalue_inflow(h, b, si, rv);
+                    if dest.proj.contains(&Proj::Deref) {
+                        // Direct stores of a local's loan are E4207 in check_stmt.
+                        self.record_store(h, dest.local, &inflow, s.span, None);
+                    }
                     match rv {
                         Rvalue::Use(o) | Rvalue::Cast(o, _) | Rvalue::Coerce(_, o, _) => self.consume_resource_operand(h, o),
                         Rvalue::Aggregate(_, operands) => for o in operands { self.consume_resource_operand(h, o); },
@@ -493,12 +506,101 @@ impl<'a> Fx<'a> {
         if check {
             self.check_term(b, h);
         }
-        if let Terminator::Call { callee, args, dest, .. } = &blk.term {
+        if let Terminator::Call { callee, args, dest, arg_spans, .. } = &blk.term {
             let inflow = self.call_inflow(h, callee, args, dest);
+            self.call_stores(h, callee, args, arg_spans, blk.term_span, check);
             self.store_effects(h, callee, args);
             for operand in args { self.consume_resource_operand(h, operand); }
             self.write_holds(h, dest, inflow);
         }
+    }
+
+    /// Parameters whose caller-owned storage `local` reaches: placeholders of
+    /// mutable reference parameters it holds, directly or through a reborrow,
+    /// whose referent can hold references.
+    fn caller_targets(&self, h: &Holds, local: LocalId) -> Vec<usize> {
+        let mut out = Vec::new();
+        for l in h.get(local.0 as usize).iter() {
+            let loan = &self.loans[l];
+            if let Some(k) = loan.param
+                && loan.kind == LoanKind::Mutable
+                && matches!(&self.f.local(loan.holder).ty, Ty::Ref(true, inner) if self.t.decls.may_contain_references(inner))
+                && !out.contains(&k)
+            {
+                out.push(k);
+            }
+        }
+        out
+    }
+
+    /// `inflow` may be kept in memory behind `local` (ADR 0068). Parameter
+    /// placeholders become store pairs of this function; when `call` names
+    /// the escaping store (a call site), a loan of this frame's own storage
+    /// kept behind a caller parameter is E4207.
+    fn record_store(&mut self, h: &Holds, local: LocalId, inflow: &BitSet, span: Span, call: Option<bool>) {
+        let targets = self.caller_targets(h, local);
+        if targets.is_empty() {
+            return;
+        }
+        for l in inflow.iter() {
+            let loan = &self.loans[l];
+            match loan.param {
+                Some(m) => {
+                    for &k in &targets {
+                        if m != k {
+                            self.found.entry((m, k)).or_insert(span);
+                        }
+                    }
+                }
+                None if call == Some(true) && !loan.place.proj.contains(&Proj::Deref) => {
+                    self.report_escape_call(l, targets[0], span);
+                }
+                None => {}
+            }
+        }
+    }
+
+    /// Store pairs a callee may perform: its summary for bodies, otherwise
+    /// any argument behind any other (intrinsics, callables, dispatch).
+    fn callee_stores(&self, callee: &Callee, arity: usize) -> Stores {
+        match callee {
+            Callee::Builtin(_) | Callee::TaskSpawn { .. } => Vec::new(),
+            Callee::Fn(id, _) if self.stores.read().unwrap().contains_key(id) => self.stores.read().unwrap()[id].clone(),
+            _ => (0..arity).flat_map(|s| (0..arity).filter(move |&d| d != s).map(move |d| (s, d))).collect(),
+        }
+    }
+
+    fn call_stores(&mut self, h: &Holds, callee: &Callee, args: &[Operand], arg_spans: &[Span], span: Span, check: bool) {
+        for (src, dst) in self.callee_stores(callee, args.len()) {
+            let (Some(a), Some(d)) = (args.get(src), args.get(dst).and_then(operand_place)) else { continue };
+            // Only a mutable reference argument can be written through.
+            if !matches!(tarn_ir::post_drop::place_ty(self.f, self.t, d), Some(Ty::Ref(true, inner)) if self.t.decls.may_contain_references(&inner)) {
+                continue;
+            }
+            // Only a mutable reference argument can be written through.
+            if !matches!(tarn_ir::post_drop::place_ty(self.f, self.t, d), Some(Ty::Ref(true, inner)) if self.t.decls.may_contain_references(&inner)) {
+                continue;
+            }
+            let mut inflow = BitSet::new(self.loans.len());
+            self.holds_of(h, a, &mut inflow);
+            if inflow.is_empty() {
+                continue;
+            }
+            let at = arg_spans.get(src).copied().unwrap_or(span);
+            self.record_store(h, d.local, &inflow, at, Some(check));
+        }
+    }
+
+    /// Store pairs of this function for the current tables: every block is
+    /// replayed from its fixpoint entry state.
+    fn store_summary(&mut self, ins: &[Option<Holds>]) -> Stores {
+        self.found.clear();
+        for (b, h) in ins.iter().enumerate() {
+            if let Some(mut h) = h.clone() {
+                self.block_forward(b, &mut h, false);
+            }
+        }
+        self.found.keys().copied().collect()
     }
 
     /// A callee may store any argument's loans behind a mutable reference it
@@ -949,6 +1051,24 @@ impl<'a> Fx<'a> {
         self.diags.push(d.help(format!("declare `{name}` in an outer scope so it outlives the reference")));
     }
 
+    fn report_escape_call(&mut self, loan: usize, param: usize, span: Span) {
+        if !self.reported.insert(loan) {
+            return;
+        }
+        let ln = self.loans[loan].clone();
+        let name = place_name(self.f, self.t, &ln.place);
+        let target = self.f.local(LocalId(param as u32 + 1)).name.clone().unwrap_or_else(|| format!("#{param}"));
+        let mut d = Diagnostic::error("E4207", "borrow_escapes_through_reference", format!("cannot store a reference to `{name}` into `{target}`"))
+            .primary(span, format!("this call may keep the reference behind `{target}`"));
+        if ln.span != span {
+            d = d.secondary(ln.span, format!("`{name}` is borrowed here"));
+        }
+        self.diags.push(
+            d.note(format!("`{target}` belongs to the caller; `{name}` is dropped when this function returns"))
+                .help("pass an owned value, or keep the data in storage that outlives the caller"),
+        );
+    }
+
     fn report_escape_store(&mut self, loan: usize, dest: &Place, span: Span) {
         if !self.reported.insert(loan) {
             return;
@@ -1012,12 +1132,15 @@ pub fn check_borrows(p: &Program, r: &Resolved, t: &Typed, skip: &HashSet<Functi
     // re-analyzed only when a direct callee's summary changes; summaries only
     // grow, so this reaches the same least fixpoint as repeated full rounds.
     let prov = RwLock::new(prov);
+    // Store summaries (ADR 0068): bodies start empty; declarations without a
+    // body have no entry and are treated conservatively at call sites.
+    let stores: RwLock<HashMap<FunctionId, Stores>> = RwLock::new(p.functions.iter().filter(|f| !f.blocks.is_empty()).map(|f| (f.id, Vec::new())).collect());
     let spawn_fn = t.decls.exec_spawn.and_then(|s| p.by_symbol.get(&s)).copied();
     let bodies: Vec<&Function> = p.functions.iter().filter(|f| !f.blocks.is_empty()).collect();
     // First round on all cores against the initial table: equivalent to the
     // first worklist pass, since summaries only grow and changes re-queue.
     let first = crate::util::par_map(bodies.clone(), |f| {
-        let mut fx = Fx::new(f, t, &prov);
+        let mut fx = Fx::new(f, t, &prov, &stores);
         fx.spawn_fn = spawn_fn;
         let ins = fx.flow();
         let summary = fx.summary(&ins);
@@ -1077,12 +1200,42 @@ pub fn check_borrows(p: &Program, r: &Resolved, t: &Typed, skip: &HashSet<Functi
             break;
         }
     }
+    // Store summaries never change loan flow, so they reach their own least
+    // fixpoint on the final flows. Pairs only grow; the set is finite.
+    let mut work: std::collections::BTreeSet<usize> = (0..bodies.len()).collect();
+    let mut budget = 32 * bodies.len().max(1);
+    while let Some(i) = work.pop_first() {
+        let s = fxs[i].store_summary(&flows[i]);
+        if stores.read().unwrap().get(&bodies[i].id) != Some(&s) {
+            stores.write().unwrap().insert(bodies[i].id, s);
+            work.extend(callers[i].iter().copied());
+        }
+        budget -= 1;
+        if budget == 0 {
+            break;
+        }
+    }
     // Checking reads the final table only; functions are independent.
     let checked = crate::util::par_map(bodies.iter().zip(fxs).zip(flows).collect(), |((f, mut fx), ins)| {
         if !skip.contains(&f.id) {
             for (b, h) in ins.iter().enumerate() {
                 if let Some(mut h) = h.clone() {
                     fx.block_forward(b, &mut h, true);
+                }
+            }
+            // A closure's call parameters are borrowed for one invocation only;
+            // keeping one in captured state lets the invoker's local escape.
+            if let tarn_ir::FnKind::Closure { captures, .. } = &f.kind {
+                let n = captures.len();
+                let escaping: Vec<((usize, usize), Span)> = fx.found.iter().filter(|((src, dst), _)| *src >= n && *dst < n).map(|(k, v)| (*k, *v)).collect();
+                if let Some(&((src, dst), span)) = escaping.first() {
+                    let name = |i: usize| f.local(LocalId(i as u32 + 1)).name.clone().unwrap_or_else(|| format!("#{i}"));
+                    fx.diags.push(
+                        Diagnostic::error("E4210", "callable_parameter_escapes", format!("cannot keep parameter `{}` in captured `{}`", name(src), name(dst)))
+                            .primary(span, format!("`{}` would outlive this call", name(src)))
+                            .note("a callable's reference parameters are only borrowed for the duration of each call")
+                            .help("copy or clone the data you need, or keep owned values in the captured state"),
+                    );
                 }
             }
         }

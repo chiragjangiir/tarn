@@ -1,0 +1,9 @@
+error[E4207]: cannot store a reference to `local` into `out`
+ --> tests/borrows/fail/E4207_store_through_recursive_helper.tarn:8:15
+  |
+8 |     ping(out, &local, 4)
+  |               ^^^^^^ this call may keep the reference behind `out`
+  |
+  = note: `out` belongs to the caller; `local` is dropped when this function returns
+  = help: pass an owned value, or keep the data in storage that outlives the caller
+

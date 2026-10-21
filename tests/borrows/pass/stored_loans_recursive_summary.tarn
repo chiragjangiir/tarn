@@ -1,0 +1,13 @@
+struct Session { value i32 }
+// Mutual recursion: the store summary must converge and still allow
+// storing a parameter into caller storage that outlives it.
+fn ping(out &mut Vec<&Session>, s &Session, n i32) {
+    if n > 0 { pong(out, s, n - 1) } else { out.push(s) }
+}
+fn pong(out &mut Vec<&Session>, s &Session, n i32) { ping(out, s, n) }
+fn main() {
+    session := Session{value: 3}
+    var list: Vec<&Session> = Vec.new()
+    ping(&mut list, &session, 4)
+    print(list.get(0).value)
+}

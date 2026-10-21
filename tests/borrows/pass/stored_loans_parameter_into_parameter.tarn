@@ -1,0 +1,12 @@
+struct Session { value i32 }
+fn fill(out &mut Vec<&Session>, a &Session, b &Session) {
+    out.push(a)
+    out.push(b)
+}
+fn main() {
+    x := Session{value: 1}
+    y := Session{value: 2}
+    var list: Vec<&Session> = Vec.new()
+    fill(&mut list, &x, &y)
+    print(list.get(1).value)
+}

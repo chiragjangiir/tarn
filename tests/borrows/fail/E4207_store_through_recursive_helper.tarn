@@ -1,0 +1,14 @@
+struct Session { value i32 }
+fn ping(out &mut Vec<&Session>, s &Session, n i32) {
+    if n > 0 { pong(out, s, n - 1) } else { out.push(s) }
+}
+fn pong(out &mut Vec<&Session>, s &Session, n i32) { ping(out, s, n) }
+fn scoped(out &mut Vec<&Session>) {
+    local := Session{value: 3}
+    ping(out, &local, 4)
+}
+fn main() {
+    var list: Vec<&Session> = Vec.new()
+    scoped(&mut list)
+    print(list.get(0).value)
+}

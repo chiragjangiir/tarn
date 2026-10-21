@@ -1,0 +1,9 @@
+error[E4207]: cannot store a reference to `local` into `out`
+ --> tests/borrows/fail/E4207_push_local_into_parameter.tarn:4:14
+  |
+4 |     out.push(&local)
+  |              ^^^^^^ this call may keep the reference behind `out`
+  |
+  = note: `out` belongs to the caller; `local` is dropped when this function returns
+  = help: pass an owned value, or keep the data in storage that outlives the caller
+

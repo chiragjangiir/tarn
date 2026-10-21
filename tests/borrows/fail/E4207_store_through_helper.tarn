@@ -1,0 +1,12 @@
+struct Session { value i32 }
+fn store(slot &mut Option<&Session>, s &Session) { *slot = Some(s) }
+fn scoped(slot &mut Option<&Session>) {
+    local := Session{value: 42}
+    store(slot, &local)
+}
+fn main() {
+    var saved: Option<&Session> = None
+    scoped(&mut saved)
+    match saved { Some(s) => { print(s.value) }
+        None => {} }
+}

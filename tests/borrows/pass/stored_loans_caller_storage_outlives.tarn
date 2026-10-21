@@ -1,0 +1,13 @@
+struct Session { value i32 }
+fn keep(slot &mut Option<&Session>, s &Session) { *slot = Some(s) }
+fn relay(slot &mut Option<&Session>, s &Session) { keep(slot, s) }
+fn main() {
+    session := Session{value: 7}
+    var saved: Option<&Session> = None
+    relay(&mut saved, &session)
+    match saved { Some(s) => { print(s.value) }
+        None => {} }
+    var list: Vec<&Session> = Vec.new()
+    list.push(&session)
+    print(list.get(0).value)
+}
