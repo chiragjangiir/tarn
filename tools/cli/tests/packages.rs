@@ -323,7 +323,7 @@ fn https_consumption_validates_tls_and_locked_bytes() {
                 "-subj",
                 "/CN=localhost",
                 "-addext",
-                "subjectAltName=DNS:localhost",
+                "subjectAltName=DNS:localhost,IP:127.0.0.1",
                 "-keyout"
             ])
             .arg(&key)
@@ -357,7 +357,9 @@ fn https_consumption_validates_tls_and_locked_bytes() {
         .read_line(&mut port)
         .unwrap();
     let _server = Server(&mut server);
-    let origin = format!("https://localhost:{}/", port.trim());
+    // The server listens on 127.0.0.1; naming that address avoids depending on
+    // how the host resolves `localhost` (some sandboxes map it only to ::1).
+    let origin = format!("https://127.0.0.1:{}/", port.trim());
     let app = f.app();
     assert!(
         !f.run(&app, &["add", "greeting", "--registry", &origin])
