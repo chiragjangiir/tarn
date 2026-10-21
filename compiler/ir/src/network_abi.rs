@@ -7,7 +7,7 @@
 use tarn_types::{IntTy, Ty, Typed};
 
 /// Native intrinsics per layer; each `<layer>._<operation>` exists once.
-const LAYER_INTRINSICS: &[(&str, usize)] = &[("io", 5), ("time", 2), ("net", 27), ("runtime", 5)];
+const LAYER_INTRINSICS: &[(&str, usize)] = &[("io", 5), ("time", 2), ("net", 28), ("runtime", 5)];
 
 pub(crate) fn verify(t: &Typed) -> Vec<String> {
     let d = &t.decls;
@@ -183,6 +183,7 @@ pub(crate) fn verify(t: &Typed) -> Vec<String> {
             ("listen", vec![i32_ty.clone()]),
             ("accept", vec![i32_ty.clone()]),
             ("connect", vec![i32_ty.clone(), addr.clone()]),
+            ("connect_unix", vec![Ty::Ref(false, Box::new(Ty::Str))]),
             ("read", vec![i32_ty.clone(), Ty::Ref(true, Box::new(bytes.clone()))]),
             ("write", vec![i32_ty.clone(), Ty::Ref(false, Box::new(bytes.clone()))]),
             ("recv", vec![i32_ty.clone(), Ty::Ref(true, Box::new(bytes.clone()))]),

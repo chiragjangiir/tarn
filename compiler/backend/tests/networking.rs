@@ -666,3 +666,98 @@ int main(void) {
     assert_eq!(events, ["open", "close", "open", "close"]);
     std::fs::remove_dir_all(dir).unwrap();
 }
+#[test]
+fn unix_stream_roundtrip_errors_timeout_and_owned_transfer() {
+    use std::io::{Read, Write};
+    let dir = std::env::temp_dir().join(format!("tarn-unix-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("echo.sock");
+    let _ = std::fs::remove_file(&path);
+    let listener = std::os::unix::net::UnixListener::bind(&path).unwrap();
+    let server = std::thread::spawn(move || {
+        // First connection echoes; the second stays silent so readiness times out.
+        let (mut echo, _) = listener.accept().unwrap();
+        let mut bytes = [0u8; 4];
+        echo.read_exact(&mut bytes).unwrap();
+        echo.write_all(&bytes).unwrap();
+        let (mut silent, _) = listener.accept().unwrap();
+        let mut rest = Vec::new();
+        silent.read_to_end(&mut rest).unwrap();
+        rest
+    });
+    let src = r#"import "io"
+import "net"
+fn kind(path &string) string {
+    match net.UnixStream.connect(path) {
+        Ok(stream) => { return "connected" }
+        Err(error) => {
+            if error.kind == io.ErrorKind.NotFound { return "not found" }
+            if error.kind == io.ErrorKind.InvalidAddress { return "invalid address" }
+            return "other"
+        }
+    }
+}
+fn main() Result<void, io.Error> {
+    path := "SOCKET"
+    var stream = try net.UnixStream.connect(&path)
+    worker := spawn move fn() Result<[4]u8, io.Error> {
+        var owned = stream
+        try owned.write_all(&[4]u8{1, 2, 3, 4})
+        var bytes = [4]u8{0, 0, 0, 0}
+        var offset = usize(0)
+        for offset < usize(4) { offset = offset + try owned.read(&mut bytes[offset..]) }
+        try owned.close()
+        return Ok(bytes)
+    }
+    echoed := try worker.join()
+    print(echoed[0])
+    print(echoed[3])
+    var silent = try net.UnixStream.connect(&path)
+    try silent.set_nonblocking(true)
+    var poll = try net.Poll.new()
+    token := try poll.register_unix(&silent, net.Interest.Readable)
+    var events = [2]net.Event{net.Event.empty(), net.Event.empty()}
+    print(try poll.wait(&mut events, 50))
+    try poll.deregister_unix(&silent, token)
+    try silent.set_nonblocking(false)
+    try silent.write_all(&[2]u8{7, 9})
+    print(kind(&"MISSING"))
+    print(kind(&""))
+    print(kind(&"a\u{0}b"))
+    print(kind(&"/tmp/01234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789x"))
+    return Ok(())
+}
+"#
+    .replace("MISSING", dir.join("missing.sock").to_str().unwrap())
+    .replace("SOCKET", path.to_str().unwrap());
+    let exe = compile(&src, "unix");
+    let out = run(&exe);
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "1\n4\n0\nnot found\ninvalid address\ninvalid address\ninvalid address\n");
+    assert_eq!(balanced(&out), 3, "both streams and the poll are opened once and closed once");
+    // The silent stream wrote before it was destroyed; destruction closed it.
+    assert_eq!(server.join().unwrap(), vec![7, 9]);
+    let _ = std::fs::remove_file(&path);
+}
+#[test]
+fn foreign_address_family_is_an_error_result_not_an_abort() {
+    // ADR 0069: an address query that sees a non-IP family (as an AF_UNIX
+    // descriptor would) returns Err; the owner is still closed exactly once.
+    let src = r#"import "io"
+import "net"
+fn main() Result<void, io.Error> {
+    socket := try net.UdpSocket.bind(&"127.0.0.1:0")
+    match socket.local_addr() {
+        Ok(address) => { print("address") }
+        Err(error) => { print(error.native_code()) }
+    }
+    try socket.close()
+    return Ok(())
+}
+"#;
+    let exe = fault_binary(src, "foreign-family");
+    let out = Command::new("timeout").arg("30s").arg(&exe).env("TARN_TRACE_NET", "1").env("TEST_FOREIGN_FAMILY", "1").output().unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "97\n");
+    assert_eq!(balanced(&out), 1);
+}

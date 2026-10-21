@@ -5,6 +5,10 @@ import "ffi"
 pub struct TcpListener { fd i32 }
 pub struct TcpStream { fd i32 }
 pub struct UdpSocket { fd i32 }
+/// A connected Unix-domain stream socket (ADR 0069). It owns a verified
+/// descriptor owner, so it is non-Copy, Transfer and not Share, and its
+/// destruction closes the descriptor exactly once.
+pub struct UnixStream { stream TcpStream }
 pub copy struct SocketAddr { data [24]u8 }
 pub copy enum IpAddr {
     V4([4]u8)
@@ -25,6 +29,7 @@ extern "intrinsic" fn _bind(fd i32, address SocketAddr) io._Raw
 extern "intrinsic" fn _listen(fd i32) io._Raw
 extern "intrinsic" fn _accept(fd i32) io._Raw
 extern "intrinsic" fn _connect(fd i32, address SocketAddr) io._Raw
+extern "intrinsic" fn _connect_unix(path &string) io._Raw
 extern "intrinsic" fn _read(fd i32, buffer &mut []u8) io._Raw
 extern "intrinsic" fn _write(fd i32, buffer &[]u8) io._Raw
 extern "intrinsic" fn _recv(fd i32, buffer &mut []u8) io._Raw
@@ -214,6 +219,24 @@ pub fn TcpStream.write(&mut self, buffer &[]u8) Result<usize, io.Error> {
         return Ok(usize(checked.value))
     }
 }
+/// Connects to a filesystem socket path. A missing path is NotFound, a
+/// refused permission PermissionDenied, and an empty, NUL-containing or
+/// over-long path (108 bytes or more) InvalidAddress.
+pub fn UnixStream.connect(path &string) Result<UnixStream, io.Error> {
+    for {
+        raw := _connect_unix(path)
+        if raw.code == 4 && raw.domain == 0 { continue }
+        if raw.domain == 0 && raw.code == 2 { return Err(io.Error{kind: io.ErrorKind.NotFound, code: 2, domain: 0}) }
+        if raw.domain == 0 && (raw.code == 1 || raw.code == 13) { return Err(io.Error{kind: io.ErrorKind.PermissionDenied, code: raw.code, domain: 0}) }
+        checked := try io._check(raw)
+        return Ok(UnixStream{stream: TcpStream{fd: i32(checked.value)}})
+    }
+}
+pub fn UnixStream.read(&mut self, buffer &mut []u8) Result<usize, io.Error> { return self.stream.read(buffer) }
+pub fn UnixStream.write(&mut self, buffer &[]u8) Result<usize, io.Error> { return self.stream.write(buffer) }
+pub fn UnixStream.write_all(&mut self, buffer &[]u8) Result<void, io.Error> { return self.stream.write_all(buffer) }
+pub fn UnixStream.shutdown(&mut self, how Shutdown) Result<void, io.Error> { return self.stream.shutdown(how) }
+pub fn UnixStream.close(self) Result<void, io.Error> { return self.stream.close() }
 fn _open(address SocketAddr, udp bool) Result<io._Raw, io.Error> {
     for {
         raw := _socket(address, udp)
@@ -277,6 +300,7 @@ fn _set_nonblocking(fd i32, enabled bool) Result<void, io.Error> {
 }
 pub fn TcpListener.set_nonblocking(&mut self, enabled bool) Result<void, io.Error> { return _set_nonblocking(self.fd, enabled) }
 pub fn TcpStream.set_nonblocking(&mut self, enabled bool) Result<void, io.Error> { return _set_nonblocking(self.fd, enabled) }
+pub fn UnixStream.set_nonblocking(&mut self, enabled bool) Result<void, io.Error> { return _set_nonblocking(self.stream.fd, enabled) }
 pub fn UdpSocket.set_nonblocking(&mut self, enabled bool) Result<void, io.Error> { return _set_nonblocking(self.fd, enabled) }
 pub fn TcpStream.connect_nonblocking(address &string) Result<Connecting, io.Error> { return TcpStream.connect_nonblocking_addr(try resolve(address)) }
 pub fn TcpStream.connect_nonblocking_addr(address SocketAddr) Result<Connecting, io.Error> {
@@ -361,6 +385,9 @@ pub fn Poll.deregister_connecting(&mut self, socket &Connecting, token Token) Re
     try _registration(self.handle, socket.stream.fd, 2, Interest.Readable, token)
     return Ok(())
 }
+pub fn Poll.register_unix(&mut self, socket &UnixStream, interest Interest) Result<Token, io.Error> { return self.register_stream(&socket.stream, interest) }
+pub fn Poll.modify_unix(&mut self, socket &UnixStream, token Token, interest Interest) Result<void, io.Error> { return self.modify_stream(&socket.stream, token, interest) }
+pub fn Poll.deregister_unix(&mut self, socket &UnixStream, token Token) Result<void, io.Error> { return self.deregister_stream(&socket.stream, token) }
 pub fn Poll.wait(&mut self, events &mut []Event, timeout i32) Result<usize, io.Error> {
     if timeout < -1 || events.len() == 0 { return Err(io.Error{kind: io.ErrorKind.InvalidAddress, code: 22, domain: 0}) }
     var remaining = timeout

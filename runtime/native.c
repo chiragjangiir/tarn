@@ -414,6 +414,7 @@ void tarn_rt_atomic_destroy(void *a) { free(a); }
 #include <errno.h>
 #include <stddef.h>
 #include <sys/socket.h>
+#include <sys/un.h>
 #include <netdb.h>
 #include <arpa/inet.h>
 #include <unistd.h>
@@ -440,7 +441,9 @@ static int net_native(const TarnNetAddr *address, struct sockaddr_storage *stora
     }
     errno = EINVAL; return -1;
 }
-static void net_address(TarnNetAddr *address, const struct sockaddr *sa) {
+/* Only IPv4/IPv6 fit SocketAddr. Any other family (e.g. an AF_UNIX descriptor
+ * reaching an address query) is an error result, never an abort (ADR 0069). */
+static int net_address(TarnNetAddr *address, const struct sockaddr *sa) {
     memset(address, 0, sizeof(*address));
     if (sa->sa_family == AF_INET) {
         const struct sockaddr_in *a = (const struct sockaddr_in *)sa;
@@ -449,7 +452,8 @@ static void net_address(TarnNetAddr *address, const struct sockaddr *sa) {
         const struct sockaddr_in6 *a = (const struct sockaddr_in6 *)sa;
         memcpy(address->bytes, &a->sin6_addr, 16); memcpy(address->bytes + 16, &a->sin6_port, 2); address->bytes[18] = 6;
         uint32_t scope = htonl(a->sin6_scope_id); memcpy(address->bytes + 20, &scope, 4);
-    } else abort(); /* bridge only creates IPv4/IPv6 sockets */
+    } else return -1;
+    return 0;
 }
 void tarn_rt_net_resolve(TarnNetRaw *out, const TarnString *endpoint) {
     net_init(out);
@@ -495,6 +499,21 @@ void tarn_rt_net_connect(TarnNetRaw *out, int32_t fd, const TarnNetAddr *address
     if (net_native(address, &sa, &len) < 0) { out->code = errno; return; }
     net_status(out, connect(fd, (struct sockaddr *)&sa, len));
 }
+/* Unix-domain stream client (ADR 0069). The path is bounded, NUL-free
+ * filesystem text; abstract names are not supported. A failed connect closes
+ * the fresh descriptor here, before any Tarn owner exists; EINTR is returned
+ * so the Tarn caller retries with a new socket, never this connect. */
+void tarn_rt_net_connect_unix(TarnNetRaw *out, const TarnString *path) {
+    net_init(out); struct sockaddr_un sa; memset(&sa, 0, sizeof(sa)); sa.sun_family = AF_UNIX;
+    if (!path->len || path->len >= sizeof(sa.sun_path) || memchr(path->bytes, 0, path->len)) { out->domain = 2; out->code = EINVAL; return; }
+    memcpy(sa.sun_path, path->bytes, path->len);
+    int fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
+    if (fd < 0) { out->code = errno; return; }
+    if (connect(fd, (struct sockaddr *)&sa, (socklen_t)(offsetof(struct sockaddr_un, sun_path) + path->len + 1)) < 0) {
+        out->code = errno; close(fd); return;
+    }
+    out->value = fd; net_trace("open", fd);
+}
 void tarn_rt_net_read(TarnNetRaw *out, int32_t fd, uint8_t *bytes, uint64_t len) {
     net_init(out); if (len) net_status(out, recv(fd, bytes, len, 0));
 }
@@ -502,7 +521,7 @@ void tarn_rt_net_write(TarnNetRaw *out, int32_t fd, const uint8_t *bytes, uint64
 void tarn_rt_net_recv(TarnNetRaw *out, int32_t fd, uint8_t *bytes, uint64_t len) {
     net_init(out); struct sockaddr_storage sa; socklen_t size = sizeof(sa);
     net_status(out, recvfrom(fd, bytes, len, 0, (struct sockaddr *)&sa, &size));
-    if (!out->code) net_address(&out->address, (struct sockaddr *)&sa);
+    if (!out->code && net_address(&out->address, (struct sockaddr *)&sa) < 0) out->code = EAFNOSUPPORT;
 }
 void tarn_rt_net_send(TarnNetRaw *out, int32_t fd, const uint8_t *bytes, uint64_t len, const TarnNetAddr *address) {
     net_init(out); struct sockaddr_storage sa; socklen_t size;
@@ -512,7 +531,7 @@ void tarn_rt_net_send(TarnNetRaw *out, int32_t fd, const uint8_t *bytes, uint64_
 void tarn_rt_net_addr(TarnNetRaw *out, int32_t fd, uint8_t peer) {
     net_init(out); struct sockaddr_storage sa; socklen_t size = sizeof(sa);
     net_status(out, peer ? getpeername(fd, (struct sockaddr *)&sa, &size) : getsockname(fd, (struct sockaddr *)&sa, &size));
-    if (!out->code) net_address(&out->address, (struct sockaddr *)&sa);
+    if (!out->code && net_address(&out->address, (struct sockaddr *)&sa) < 0) out->code = EAFNOSUPPORT;
 }
 void tarn_rt_net_shutdown(TarnNetRaw *out, int32_t fd, int32_t how) { net_init(out); net_status(out, shutdown(fd, how)); }
 static void net_timer_track(int32_t fd);

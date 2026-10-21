@@ -85,6 +85,17 @@ __attribute__((destructor)) static void audit_fds(void) {
 }
 
 int __real_getsockname(int, struct sockaddr*, socklen_t*);
-int __wrap_getsockname(int fd, struct sockaddr *a, socklen_t *n) { ONCE(); return __real_getsockname(fd,a,n); }
+// TEST_FOREIGN_FAMILY reports a non-IP family, as an AF_UNIX descriptor would.
+int __wrap_getsockname(int fd, struct sockaddr *a, socklen_t *n) {
+    ONCE();
+    int rc = __real_getsockname(fd,a,n);
+    if (rc == 0 && getenv("TEST_FOREIGN_FAMILY")) a->sa_family = AF_UNIX;
+    return rc;
+}
 int __real_getpeername(int, struct sockaddr*, socklen_t*);
-int __wrap_getpeername(int fd, struct sockaddr *a, socklen_t *n) { ONCE(); return __real_getpeername(fd,a,n); }
+int __wrap_getpeername(int fd, struct sockaddr *a, socklen_t *n) {
+    ONCE();
+    int rc = __real_getpeername(fd,a,n);
+    if (rc == 0 && getenv("TEST_FOREIGN_FAMILY")) a->sa_family = AF_UNIX;
+    return rc;
+}

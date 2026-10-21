@@ -480,6 +480,7 @@ pub fn emit_entry(p: &post::Program, t: &Typed, test: bool) -> Result<Vec<u8>> {
         ("tarn_rt_net_socket", vec![types::I64, types::I64, types::I8], vec![]),
         ("tarn_rt_net_bind", vec![types::I64, types::I32, types::I64], vec![]),
         ("tarn_rt_net_connect", vec![types::I64, types::I32, types::I64], vec![]),
+        ("tarn_rt_net_connect_unix", vec![types::I64; 2], vec![]),
         ("tarn_rt_net_listen", vec![types::I64, types::I32], vec![]),
         ("tarn_rt_net_accept", vec![types::I64, types::I32], vec![]),
         ("tarn_rt_net_close", vec![types::I64, types::I32], vec![]),

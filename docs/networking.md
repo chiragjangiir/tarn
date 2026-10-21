@@ -224,6 +224,18 @@ descriptor is not readable: after a readable event, read until WouldBlock
 before waiting again. Errors use `io.Error` domain 5 with libcurl codes
 preserved. See [ADR 0066](adr/0066-persistent-tls-streams.md).
 
+## Unix-domain stream clients
+
+`net.UnixStream.connect(&"/run/app/control.sock")` connects to a filesystem
+Unix-domain stream socket. It is owned, Transfer and not Share; `read`/`write`
+are partial, `write_all` is blocking-only, `shutdown` and consuming `close`
+behave as for TcpStream, and destruction closes the descriptor once. Deadlines
+use readiness: `set_nonblocking(true)`, `Poll.register_unix`, `Poll.wait` with a
+timeout. A missing path is NotFound, a denied one PermissionDenied, and an
+empty, NUL-containing or 108-byte-or-longer path InvalidAddress. There is no
+listener, abstract namespace, datagram socket, address query, credential
+passing or async method yet. See [ADR 0069](adr/0069-unix-stream-client.md).
+
 ## Manual suspended execution (Phase 12C)
 
 `Execution.new()` owns a single-thread readiness context. An `Operation<R>`
