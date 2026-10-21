@@ -514,6 +514,16 @@ void tarn_rt_net_connect_unix(TarnNetRaw *out, const TarnString *path) {
     }
     out->value = fd; net_trace("open", fd);
 }
+/* Connected Unix stream pair (ADR 0070): value is the first descriptor and
+ * address bytes 0..4 the second, little-endian. Both are close-on-exec; only
+ * an explicit process handoff makes one visible to a child. */
+void tarn_rt_net_pair_unix(TarnNetRaw *out) {
+    net_init(out); int fds[2];
+    if (socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, fds) < 0) { out->code = errno; return; }
+    out->value = fds[0];
+    for (int i = 0; i < 4; ++i) out->address.bytes[i] = (uint8_t)((uint32_t)fds[1] >> (i * 8));
+    net_trace("open", fds[0]); net_trace("open", fds[1]);
+}
 void tarn_rt_net_read(TarnNetRaw *out, int32_t fd, uint8_t *bytes, uint64_t len) {
     net_init(out); if (len) net_status(out, recv(fd, bytes, len, 0));
 }
@@ -978,6 +988,8 @@ void tarn_rt_fs_dir_drop(DIR *directory) {
 #include <spawn.h>
 #include <signal.h>
 #include <sys/wait.h>
+#include <sys/syscall.h>
+#include <poll.h>
 extern char **environ;
 static void process_trace(const char *event, int id) {
     if (TARN_TRACE(PROCESS)) { flockfile(stderr); fprintf(stderr, "process:%s:%d\n", event, id); funlockfile(stderr); }
@@ -985,6 +997,7 @@ static void process_trace(const char *event, int id) {
 static void process_error(TarnNetRaw *out, int code) { net_init(out); out->domain = 4; out->code = code; }
 static void process_close(int fd) {
     process_trace("fd_close", fd);
+    net_timer_forget(fd); /* readiness identity (ADR 0071), before fd reuse */
     if (close(fd) < 0 && errno == EBADF) abort(); /* Never retry Linux close. */
 }
 static char *process_text(TarnNetRaw *out, const TarnString *value) {
@@ -1044,14 +1057,18 @@ fail:
 void tarn_rt_process_spawn(TarnNetRaw *out, const TarnString *program,
         const TarnString *const *arguments, uint64_t count,
         const TarnString *const *environment, uint64_t environment_count, const TarnString *directory,
-        uint8_t use_directory, uint8_t capture) {
+        uint8_t use_directory, uint8_t capture, int32_t stdio, const int32_t *passed, uint64_t passed_count) {
     net_init(out);
     if (!program->len || (use_directory && !directory->len)) { process_error(out, EINVAL); return; }
+    /* ADR 0070: at most 64 handed-over descriptors, child fds 3.. in order. */
+    if (passed_count > 64 || stdio < 0 || stdio > 63 || (capture && stdio)) { process_error(out, EINVAL); return; }
+    for (int target = 0; target < 3; ++target) if (((stdio >> (2 * target)) & 3) == 3) { process_error(out, EINVAL); return; }
     if (count > SIZE_MAX / sizeof(char *) - 2) { process_error(out, E2BIG); return; }
     char **envp = environ;
     if (environment_count) { envp = process_environment(out, environment, environment_count); if (!envp) return; }
     char **argv = calloc(count + 2, sizeof(char *)); if (!argv) abort();
-    char *cwd = NULL; int code = 0, pipes[4] = {-1, -1, -1, -1}, input = -1;
+    char *cwd = NULL; int code = 0, pipes[6] = {-1, -1, -1, -1, -1, -1}, input = -1, null = -1;
+    int handoff[64]; for (int i = 0; i < 64; ++i) handoff[i] = -1;
     posix_spawn_file_actions_t actions; posix_spawnattr_t attributes;
     int actions_ready = 0, attributes_ready = 0; pid_t pid = -1;
     argv[0] = process_text(out, program); if (!argv[0]) { code = out->code; goto done; }
@@ -1073,25 +1090,59 @@ void tarn_rt_process_spawn(TarnNetRaw *out, const TarnString *program,
         code = posix_spawn_file_actions_adddup2(&actions, input, 0); if (code) goto done;
         code = posix_spawn_file_actions_adddup2(&actions, pipes[1], 1); if (code) goto done;
         code = posix_spawn_file_actions_adddup2(&actions, pipes[3], 2); if (code) goto done;
+    } else if (stdio) {
+        /* Two bits per stream (stdin, stdout, stderr): 1 /dev/null, 2 pipe.
+         * Pipe slots: stdout 0/1, stderr 2/3, stdin 4/5 (read/write ends). */
+        static const int slot[3] = {4, 0, 2};
+        for (int target = 0; target < 3; ++target) {
+            int mode = (stdio >> (2 * target)) & 3;
+            if (mode == 1) {
+                if (null < 0) { null = process_fd(open("/dev/null", O_RDWR | O_CLOEXEC)); if (null < 0) { code = errno; goto done; } }
+                code = posix_spawn_file_actions_adddup2(&actions, null, target); if (code) goto done;
+            } else if (mode == 2) {
+                code = process_pipe(pipes + slot[target]); if (code) goto done;
+                int child_end = pipes[slot[target] + (target == 0 ? 0 : 1)];
+                code = posix_spawn_file_actions_adddup2(&actions, child_end, target); if (code) goto done;
+            }
+        }
+    }
+    /* Each handed-over descriptor is first duplicated above every target, so
+     * no dup2 can overwrite a later source; dup2 clears close-on-exec only on
+     * the child's copy. The parent owners stay untouched and close normally. */
+    for (uint64_t i = 0; i < passed_count; ++i) {
+        handoff[i] = fcntl(passed[i], F_DUPFD_CLOEXEC, 3 + (int)passed_count);
+        if (handoff[i] < 0) { code = errno; goto done; }
+        process_trace("fd_open", handoff[i]);
+        code = posix_spawn_file_actions_adddup2(&actions, handoff[i], 3 + (int)i); if (code) goto done;
     }
     if (use_directory) { code = posix_spawn_file_actions_addchdir_np(&actions, cwd); if (code) goto done; }
     /* Child never inherits other application/runtime descriptors. GNU libc
      * closefrom/chdir spawn actions avoid unsafe post-fork Tarn callbacks. */
-    code = posix_spawn_file_actions_addclosefrom_np(&actions, 3); if (code) goto done;
+    code = posix_spawn_file_actions_addclosefrom_np(&actions, 3 + (int)passed_count); if (code) goto done;
+    /* Runtime print buffering is hidden state, not a program-owned buffer:
+     * flush it so an inheriting child cannot overtake earlier prints. */
+    (void)fflush(stdout);
     code = posix_spawnp(&pid, argv[0], &actions, &attributes, argv, envp);
     if (!code) {
         net_init(out); out->value = pid; process_trace("spawn", pid);
-        if (capture) {
-            uint8_t *bytes = (uint8_t *)&out->address;
-            for (int i = 0; i < 4; ++i) { bytes[i] = (uint32_t)pipes[0] >> (i * 8); bytes[4 + i] = (uint32_t)pipes[2] >> (i * 8); }
-            pipes[0] = -1; pipes[2] = -1; /* Acquisition passed to Tarn owners. */
+        /* Parent ends pass to Tarn owners: stdout read, stderr read, stdin write. */
+        uint8_t *bytes = (uint8_t *)&out->address;
+        for (int i = 0; i < 4; ++i) {
+            bytes[i] = (uint32_t)pipes[0] >> (i * 8); bytes[4 + i] = (uint32_t)pipes[2] >> (i * 8);
+            bytes[8 + i] = (uint32_t)pipes[5] >> (i * 8);
         }
+        /* Piped child ends get a unique readiness identity, like timers, so
+         * Poll tokens cannot confuse a recycled descriptor (ADR 0035). */
+        if (!capture) for (int i = 0; i < 6; i += 1) if ((i == 0 || i == 2 || i == 5) && pipes[i] >= 0) net_timer_track(pipes[i]);
+        pipes[0] = -1; pipes[2] = -1; pipes[5] = -1;
     }
 done:
     if (actions_ready) posix_spawn_file_actions_destroy(&actions);
     if (attributes_ready) posix_spawnattr_destroy(&attributes);
-    for (int i = 0; i < 4; ++i) if (pipes[i] >= 0) process_close(pipes[i]);
+    for (int i = 0; i < 6; ++i) if (pipes[i] >= 0) process_close(pipes[i]);
     if (input >= 0) process_close(input);
+    if (null >= 0) process_close(null);
+    for (int i = 0; i < 64; ++i) if (handoff[i] >= 0) process_close(handoff[i]);
     for (uint64_t i = 0; i < count + 1; ++i) free(argv[i]);
     free(argv); free(cwd);
     if (envp != environ) { for (char **e = envp; *e; ++e) free(*e); free(envp); }
@@ -1107,6 +1158,45 @@ void tarn_rt_process_wait(TarnNetRaw *out, int32_t pid) {
     if (WIFEXITED(status)) { out->value = WEXITSTATUS(status); }
     else if (WIFSIGNALED(status)) { out->value = WTERMSIG(status); ((uint8_t *)&out->address)[0] = 1; }
     else abort();
+}
+/* ADR 0070: observe completion without reaping (WNOWAIT), so the pid stays
+ * owned by Process until its consuming wait or destruction. A positive
+ * timeout waits on a pidfd; EINTR resumes with the remaining time. Result:
+ * address[1] = 1 when finished, address[0] = 1 when signaled. */
+void tarn_rt_process_poll_exit(TarnNetRaw *out, int32_t pid, int32_t timeout) {
+    net_init(out);
+    if (pid <= 0 || timeout < 0) { process_error(out, EINVAL); return; }
+    if (timeout > 0) {
+        int fd = (int)syscall(SYS_pidfd_open, pid, 0);
+        if (fd < 0) { process_error(out, errno); return; }
+        struct timespec start; clock_gettime(CLOCK_MONOTONIC, &start);
+        int remaining = timeout;
+        for (;;) {
+            struct pollfd entry = {fd, POLLIN, 0};
+            if (poll(&entry, 1, remaining) >= 0) break;
+            if (errno != EINTR) { int code = errno; (void)close(fd); process_error(out, code); return; }
+            struct timespec now; clock_gettime(CLOCK_MONOTONIC, &now);
+            int64_t spent = (int64_t)(now.tv_sec - start.tv_sec) * 1000 + (now.tv_nsec - start.tv_nsec) / 1000000;
+            remaining = spent >= timeout ? 0 : timeout - (int)spent;
+        }
+        (void)close(fd); /* pidfd is private to this call; never retried */
+    }
+    siginfo_t info; memset(&info, 0, sizeof(info)); int result;
+    do { result = waitid(P_PID, (id_t)pid, &info, WEXITED | WNOHANG | WNOWAIT); } while (result < 0 && errno == EINTR);
+    if (result < 0) { process_error(out, errno); return; }
+    if (info.si_pid == 0) return;
+    uint8_t *bytes = (uint8_t *)&out->address;
+    bytes[1] = 1; out->value = info.si_status;
+    if (info.si_code != CLD_EXITED) bytes[0] = 1;
+}
+/* ADR 0072: an owned pidfd for async completion. It gets a readiness
+ * identity like piped ends and closes through the ordinary pipe owner. */
+void tarn_rt_process_pidfd(TarnNetRaw *out, int32_t pid) {
+    net_init(out); if (pid <= 0) { process_error(out, EINVAL); return; }
+    int fd = (int)syscall(SYS_pidfd_open, pid, 0);
+    if (fd < 0) { process_error(out, errno); return; }
+    fd = process_fd(fd); if (fd < 0) { process_error(out, errno); return; }
+    net_timer_track(fd); out->value = fd;
 }
 void tarn_rt_process_drop(int32_t pid) { TarnNetRaw out; tarn_rt_process_wait(&out, pid); }
 void tarn_rt_process_pipe_drop(int32_t fd) { process_close(fd); }
@@ -1161,6 +1251,12 @@ static int64_t tarn_console_output(int32_t fd, const uint8_t *data, uint64_t cou
     pthread_sigmask(SIG_SETMASK, &old, NULL);
     errno = saved;
     return result;
+}
+/* Child stdin writes (ADR 0071) reuse the console SIGPIPE discipline: a
+ * closed reader is EPIPE, never a process-killing signal. */
+void tarn_rt_process_write(TarnNetRaw *out, int32_t fd, const uint8_t *bytes, uint64_t len) {
+    net_init(out); int64_t result = tarn_console_output(fd, bytes, len, 0); out->value = result;
+    if (result < 0) process_error(out, errno);
 }
 int64_t tarn_console_write(int32_t fd, const uint8_t *data, uint64_t count) {
     return tarn_console_output(fd, data, count, 0);

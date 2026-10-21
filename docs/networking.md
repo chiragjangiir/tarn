@@ -232,9 +232,10 @@ are partial, `write_all` is blocking-only, `shutdown` and consuming `close`
 behave as for TcpStream, and destruction closes the descriptor once. Deadlines
 use readiness: `set_nonblocking(true)`, `Poll.register_unix`, `Poll.wait` with a
 timeout. A missing path is NotFound, a denied one PermissionDenied, and an
-empty, NUL-containing or 108-byte-or-longer path InvalidAddress. There is no
-listener, abstract namespace, datagram socket, address query, credential
-passing or async method yet. See [ADR 0069](adr/0069-unix-stream-client.md).
+empty, NUL-containing or 108-byte-or-longer path InvalidAddress. `UnixStream.pair()` returns a
+connected `UnixPair { first, second }` with no filesystem name (ADR 0070); hand
+one end to a child with `process.Command.pass`. There is no listener, abstract
+namespace, datagram socket, address query, credential passing or async method yet. See [ADR 0069](adr/0069-unix-stream-client.md).
 
 ## Manual suspended execution (Phase 12C)
 

@@ -48,16 +48,27 @@ pub(crate) fn verify(t: &Typed) -> Vec<String> {
                 text,
                 Ty::Bool,
                 Ty::Bool,
+                scalar.clone(),
+                Ty::Ref(false, Box::new(Ty::Slice(Box::new(scalar.clone())))),
             ],
         ),
+        ("poll_exit", vec![scalar.clone(), scalar.clone()]),
+        ("pidfd", vec![scalar.clone()]),
         ("wait", vec![Ty::Adt(child, vec![])]),
         ("close", vec![Ty::Adt(pipe, vec![])]),
         ("kill", vec![scalar.clone()]),
         (
             "read",
             vec![
-                scalar,
+                scalar.clone(),
                 Ty::Ref(true, Box::new(Ty::Slice(Box::new(Ty::Int(IntTy::U8))))),
+            ],
+        ),
+        (
+            "write",
+            vec![
+                scalar,
+                Ty::Ref(false, Box::new(Ty::Slice(Box::new(Ty::Int(IntTy::U8))))),
             ],
         ),
     ];

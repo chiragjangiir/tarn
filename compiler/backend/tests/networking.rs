@@ -761,3 +761,36 @@ fn main() Result<void, io.Error> {
     assert_eq!(String::from_utf8_lossy(&out.stdout), "97\n");
     assert_eq!(balanced(&out), 1);
 }
+#[test]
+fn unix_pair_is_connected_owned_and_closed_once() {
+    let src = r#"import "io"
+import "net"
+fn main() Result<void, io.Error> {
+    pair := try net.UnixStream.pair()
+    var left = pair.first
+    right := pair.second
+    worker := spawn move fn() Result<void, io.Error> {
+        var end = right
+        var bytes = [3]u8{0, 0, 0}
+        var offset = usize(0)
+        for offset < usize(3) { offset = offset + try end.read(&mut bytes[offset..]) }
+        try end.write_all(&bytes)
+        return Ok(())
+    }
+    try left.write_all(&[3]u8{5, 6, 7})
+    var echoed = [3]u8{0, 0, 0}
+    var offset = usize(0)
+    for offset < usize(3) { offset = offset + try left.read(&mut echoed[offset..]) }
+    try worker.join()
+    print(echoed[2])
+    // The peer was destroyed when its task finished: end of stream.
+    print(try left.read(&mut echoed))
+    return Ok(())
+}
+"#;
+    let exe = compile(src, "unix-pair");
+    let out = run(&exe);
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "7\n0\n");
+    assert_eq!(balanced(&out), 2);
+}

@@ -9,6 +9,11 @@ pub struct UdpSocket { fd i32 }
 /// descriptor owner, so it is non-Copy, Transfer and not Share, and its
 /// destruction closes the descriptor exactly once.
 pub struct UnixStream { stream TcpStream }
+/// Two connected ends from `UnixStream.pair()`; move each field out to use it.
+pub struct UnixPair {
+    pub first UnixStream
+    pub second UnixStream
+}
 pub copy struct SocketAddr { data [24]u8 }
 pub copy enum IpAddr {
     V4([4]u8)
@@ -30,6 +35,7 @@ extern "intrinsic" fn _listen(fd i32) io._Raw
 extern "intrinsic" fn _accept(fd i32) io._Raw
 extern "intrinsic" fn _connect(fd i32, address SocketAddr) io._Raw
 extern "intrinsic" fn _connect_unix(path &string) io._Raw
+extern "intrinsic" fn _pair_unix() io._Raw
 extern "intrinsic" fn _read(fd i32, buffer &mut []u8) io._Raw
 extern "intrinsic" fn _write(fd i32, buffer &[]u8) io._Raw
 extern "intrinsic" fn _recv(fd i32, buffer &mut []u8) io._Raw
@@ -231,6 +237,13 @@ pub fn UnixStream.connect(path &string) Result<UnixStream, io.Error> {
         checked := try io._check(raw)
         return Ok(UnixStream{stream: TcpStream{fd: i32(checked.value)}})
     }
+}
+/// A connected pair with no filesystem name (socketpair). Both ends are
+/// close-on-exec; hand one to a child with `process.Command.pass`.
+pub fn UnixStream.pair() Result<UnixPair, io.Error> {
+    raw := try io._check(_pair_unix())
+    second := i32(raw.address[0]) + i32(raw.address[1]) * 256 + i32(raw.address[2]) * 65536 + i32(raw.address[3]) * 16777216
+    return Ok(UnixPair{first: UnixStream{stream: TcpStream{fd: i32(raw.value)}}, second: UnixStream{stream: TcpStream{fd: second}}})
 }
 pub fn UnixStream.read(&mut self, buffer &mut []u8) Result<usize, io.Error> { return self.stream.read(buffer) }
 pub fn UnixStream.write(&mut self, buffer &[]u8) Result<usize, io.Error> { return self.stream.write(buffer) }

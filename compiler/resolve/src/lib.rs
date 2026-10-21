@@ -48,7 +48,7 @@ pub struct ModuleInput<'a> {
 /// it builds on, never of layers above or beside it; user modules never see
 /// private stdlib items.
 pub const STDLIB_LAYERS: &[&str] = &["io", "time", "net", "runtime", "fs", "process", "ffi"];
-const STDLIB_BELOW: &[(&str, &[&str])] = &[("io", &[]), ("ffi", &[]), ("fs", &["io"]), ("process", &["io"]), ("time", &["io"]), ("net", &["io"]), ("runtime", &["io", "time", "net"])];
+const STDLIB_BELOW: &[(&str, &[&str])] = &[("io", &[]), ("ffi", &[]), ("fs", &["io"]), ("process", &["io", "net", "fs"]), ("time", &["io"]), ("net", &["io"]), ("runtime", &["io", "time", "net"])];
 
 /// Whether `from` may use a private item or field declared in `to`.
 pub fn internal_visible(from: &ModuleInput, to: &ModuleInput) -> bool {
@@ -365,8 +365,10 @@ mod tests {
         assert!(!crate::internal_visible(&runtime, &fs) && !crate::internal_visible(&fs, &runtime));
         assert!(!crate::internal_visible(&module("fs", false), &io));
         let process = module("process", true);
-        assert!(crate::internal_visible(&process, &io));
-        for sibling in [&fs, &net, &time, &runtime] {
+        // ADR 0070/0071: process hands Unix streams and files to children.
+        assert!(crate::internal_visible(&process, &io) && crate::internal_visible(&process, &net) && crate::internal_visible(&process, &fs));
+        assert!(!crate::internal_visible(&net, &process) && !crate::internal_visible(&fs, &process));
+        for sibling in [&time, &runtime] {
             assert!(!crate::internal_visible(&process, sibling) && !crate::internal_visible(sibling, &process));
         }
         assert!(!crate::internal_visible(&module("process", false), &io));

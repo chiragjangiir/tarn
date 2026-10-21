@@ -491,3 +491,367 @@ fn private_runtime_never_leaks_fds_or_inherits_unrelated_descriptors() {
     );
     std::fs::remove_dir_all(dir).unwrap();
 }
+#[test]
+fn unix_pair_handoff_null_stdio_and_bounded_waits() {
+    // ADR 0070: a socketpair end becomes the child's fd 3, its stdout/stderr
+    // go to /dev/null, and completion is observed with and without timeouts
+    // without reaping before the owning wait.
+    let src = r#"import "io"
+import "net"
+import "process"
+import "string"
+fn describe(result Option<process.ExitStatus>) string {
+    match result {
+        None => { return "running" }
+        Some(status) => {
+            match status.code() { Some(code) => { return "exited " + &string.from_i64(i64(code)) }
+                None => {} }
+            match status.signal() { Some(signal) => { return "signaled " + &string.from_i64(i64(signal)) }
+                None => { return "?" } }
+        }
+    }
+}
+fn main() Result<void, io.Error> {
+    pair := try net.UnixStream.pair()
+    var parent = pair.first
+    var child = try process.Command.new("HELPER").arg("channel").stdout(process.Stdio.Null).stderr(process.Stdio.Null).pass(pair.second).start()
+    try parent.write_all(&[4]u8{1, 2, 3, 4})
+    var echoed = [4]u8{0, 0, 0, 0}
+    var offset = usize(0)
+    for offset < usize(4) { offset = offset + try parent.read(&mut echoed[offset..]) }
+    print(echoed[3])
+    print(describe(try child.wait_timeout(10000)))
+    print((try child.wait()).success())
+    // The child exited and the Command was destroyed: no writer is left.
+    print(try parent.read(&mut echoed))
+    var sleeper = try process.Command.new("HELPER").arg("pause").start()
+    print(describe(try sleeper.try_wait()))
+    print(describe(try sleeper.wait_timeout(50)))
+    try sleeper.kill()
+    print(describe(try sleeper.wait_timeout(10000)))
+    print(describe(try sleeper.try_wait()))
+    print(describe(Some(try sleeper.wait())))
+    var quick = try process.Command.new("HELPER").arg("exit").arg("3").start()
+    print(describe(try quick.wait_timeout(10000)))
+    match quick.wait_timeout(-1) {
+        Ok(result) => { print("accepted") }
+        Err(error) => { print(error.kind == io.ErrorKind.InvalidInput) }
+    }
+    print(describe(Some(try quick.wait())))
+    return Ok(())
+}
+"#;
+    let (dir, res) = checked(src, "handoff");
+    let exe = build(&dir, &res);
+    let out = run(&exe);
+    success(&out, "4\nexited 0\ntrue\n0\nrunning\nrunning\nsignaled 9\nsignaled 9\nsignaled 9\nexited 3\ntrue\nexited 3\n");
+    std::fs::remove_dir_all(dir).unwrap();
+}
+#[test]
+fn handoff_limits_and_inherited_stdio_are_explicit() {
+    let src = r#"import "io"
+import "net"
+import "process"
+fn main() Result<void, io.Error> {
+    first := try net.UnixStream.pair()
+    var command = process.Command.new("HELPER").arg("args").arg("visible").pass(first.second)
+    var index = 1
+    for index < 65 {
+        pair := try net.UnixStream.pair()
+        command = command.pass(pair.second)
+        index = index + 1
+    }
+    var rejected = false
+    match command.start() {
+        Ok(child) => {}
+        Err(error) => { rejected = error.kind == io.ErrorKind.InvalidInput }
+    }
+    status := try process.Command.new("HELPER").arg("args").arg("inherited").stdout(process.Stdio.Null).stdout(process.Stdio.Inherit).status()
+    print(rejected)
+    print(status.success())
+    return Ok(())
+}
+"#;
+    let (dir, res) = checked(src, "handoff-limits");
+    let exe = build(&dir, &res);
+    let out = run(&exe);
+    success(&out, "inherited\ntrue\ntrue\n");
+    std::fs::remove_dir_all(dir).unwrap();
+}
+#[test]
+fn earlier_prints_reach_inherited_stdout_before_the_child() {
+    let src = r#"import "io"
+import "process"
+fn main() Result<void, io.Error> {
+    print("before")
+    try process.Command.new("HELPER").arg("args").arg("child").status()
+    print("after")
+    return Ok(())
+}
+"#;
+    let (dir, res) = checked(src, "flush-order");
+    let exe = build(&dir, &res);
+    // stdout is a pipe here, so C stdio buffers fully: the old order was child first.
+    success(&run(&exe), "before\nchild\nafter\n");
+    std::fs::remove_dir_all(dir).unwrap();
+}
+#[test]
+fn launch_consumes_handoffs_on_success_and_failure() {
+    // ADR 0071: a Launch held in a variable still gives up the parent's copy
+    // at launch, so the peer sees end of stream once the child exits; a
+    // failed launch closes it too.
+    let src = r#"import "io"
+import "net"
+import "process"
+fn main() Result<void, io.Error> {
+    pair := try net.UnixStream.pair()
+    var parent = pair.first
+    launch := process.Command.new("HELPER").arg("channel").pass(pair.second).stdout(process.Stdio.Null).stderr(process.Stdio.Null)
+    child := try launch.start()
+    try parent.write_all(&[4]u8{1, 2, 3, 4})
+    var echoed = [4]u8{0, 0, 0, 0}
+    var offset = usize(0)
+    for offset < usize(4) { offset = offset + try parent.read(&mut echoed[offset..]) }
+    print((try child.wait()).success())
+    print(try parent.read(&mut echoed))
+    failed := try net.UnixStream.pair()
+    var peer = failed.first
+    match process.Command.new("ROOT/missing-program").pass(failed.second).start() {
+        Ok(process) => { print("started") }
+        Err(error) => { print(error.kind == io.ErrorKind.NotFound) }
+    }
+    print(try peer.read(&mut echoed))
+    return Ok(())
+}
+"#;
+    let (dir, res) = checked(src, "launch");
+    let exe = build(&dir, &res);
+    success(&run(&exe), "true\n0\ntrue\n0\n");
+    std::fs::remove_dir_all(dir).unwrap();
+}
+#[test]
+fn a_launch_cannot_be_reused_after_it_starts() {
+    let dir = std::env::temp_dir().join(format!("tarn-process-{}-launch-reuse", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let entry = dir.join("main.tarn");
+    std::fs::write(&entry, r#"import "io"
+import "net"
+import "process"
+fn main() Result<void, io.Error> {
+    pair := try net.UnixStream.pair()
+    launch := process.Command.new("/bin/true").pass(pair.second)
+    first := try launch.start()
+    second := try launch.start()
+    return Ok(())
+}
+"#).unwrap();
+    let res = tarn_driver::check(&entry).unwrap();
+    assert!(res.diagnostics.iter().any(|d| d.code == "E4001"), "{:?}", res.diagnostics.iter().map(|d| d.code.to_string()).collect::<Vec<_>>());
+    std::fs::remove_dir_all(dir).unwrap();
+}
+#[test]
+fn piped_stdio_streams_closes_before_wait_and_reports_broken_pipe() {
+    let src = r#"import "io"
+import "net"
+import "process"
+import "string"
+fn text(bytes Vec<u8>) string {
+    match string.from_utf8(bytes.as_slice()) { Some(value) => { return value }
+        None => { return "?" } }
+}
+fn watch(pipe Option<process.ChildStdout>) Result<void, io.Error> {
+    match pipe {
+        Some(value) => {
+            var reader = value
+            try reader.set_nonblocking(true)
+            var poll = try net.Poll.new()
+            token := try reader.register(&mut poll)
+            var events = [1]net.Event{net.Event.empty()}
+            print(try poll.wait(&mut events, 50))
+            var buffer = [8]u8{0, 0, 0, 0, 0, 0, 0, 0}
+            match reader.read(&mut buffer) {
+                Ok(count) => { print("read") }
+                Err(error) => { print(error.kind == io.ErrorKind.WouldBlock) }
+            }
+            try reader.deregister(&mut poll, token)
+            return Ok(())
+        }
+        None => { return Err(io.Error.new(io.ErrorKind.InvalidInput)) }
+    }
+}
+fn main() Result<void, io.Error> {
+    // Streaming round trip: stdin closes, stdout and stderr drain.
+    var child = try process.Command.new("HELPER").arg("echo-stdin").stdin(process.Stdio.Piped).stdout(process.Stdio.Piped).stderr(process.Stdio.Piped).start_child()
+    var input = child.stdin
+    match input { Some(pipe) => {
+            var writer = pipe
+            try writer.write_all("hello".bytes())
+            writer.close()
+        }
+        None => { print("no stdin") } }
+    child.stdin = None
+    match child.stdout { Some(pipe) => { print(text(try pipe.read_all())) }
+        None => { print("no stdout") } }
+    child.stdout = None
+    match child.stderr { Some(pipe) => { print(text(try pipe.read_all())) }
+        None => { print("no stderr") } }
+    child.stderr = None
+    print((try child.wait()).success())
+    // Destroying a Child whose stdin is still open must not deadlock.
+    {
+        reader := try process.Command.new("HELPER").arg("echo-stdin").stdin(process.Stdio.Piped).stdout(process.Stdio.Null).stderr(process.Stdio.Null).start_child()
+    }
+    print("destroyed")
+    // A finished reader makes writes BrokenPipe instead of killing us.
+    var gone = try process.Command.new("HELPER").arg("exit").arg("0").stdin(process.Stdio.Piped).start_child()
+    var observed = try gone.process.wait_timeout(10000)
+    match gone.stdin {
+        Some(pipe) => {
+            var writer = pipe
+            match writer.write("late".bytes()) {
+                Ok(count) => { print("written") }
+                Err(error) => { print(error.kind == io.ErrorKind.BrokenPipe) }
+            }
+        }
+        None => {}
+    }
+    gone.stdin = None
+    print((try gone.wait()).success())
+    // Piped streams require start_child.
+    match process.Command.new("HELPER").arg("args").stdout(process.Stdio.Piped).start() {
+        Ok(process) => { print("started") }
+        Err(error) => { print(error.kind == io.ErrorKind.InvalidInput) }
+    }
+    // Readiness with a deadline on a silent child's stdout.
+    var silent = try process.Command.new("HELPER").arg("pause").stdout(process.Stdio.Piped).start_child()
+    watched := silent.stdout
+    silent.stdout = None
+    // Kill before propagating any readiness error: a paused child would
+    // otherwise be awaited forever by destruction (ADR 0045).
+    outcome := watch(watched)
+    try silent.process.kill()
+    try outcome
+    print((try silent.wait()).success())
+    return Ok(())
+}
+"#;
+    let (dir, res) = checked(src, "piped");
+    let exe = build(&dir, &res);
+    success(&run(&exe), "hello\ne\ntrue\ndestroyed\ntrue\ntrue\ntrue\n0\ntrue\nfalse\n");
+    std::fs::remove_dir_all(dir).unwrap();
+}
+#[test]
+fn files_and_streams_share_handoff_numbering() {
+    // ADR 0071: handoffs of either kind are numbered 3 + k by call order.
+    let src = r#"import "io"
+import "fs"
+import "net"
+import "process"
+fn main() Result<void, io.Error> {
+    log := try fs.File.create(&"ROOT/data/child.log")
+    pair := try net.UnixStream.pair()
+    var parent = pair.first
+    status := try process.Command.new("HELPER").arg("write-fds").pass_file(log).pass(pair.second).status()
+    print(status.success())
+    var byte = [1]u8{0}
+    print(try parent.read(&mut byte))
+    print(byte[0])
+    print(try fs.read_text(&"ROOT/data/child.log"))
+    return Ok(())
+}
+"#;
+    let (dir, res) = checked(src, "pass-file");
+    let exe = build(&dir, &res);
+    let out = run(&exe);
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "true\n1\n115\nfile\n\n");
+    std::fs::remove_dir_all(dir).unwrap();
+}
+#[test]
+fn communicate_drains_large_streams_without_deadlock() {
+    // ADR 0072: 512 KiB through stdin while the child echoes it to stdout far
+    // beyond the pipe capacity; sequential write-then-read would deadlock.
+    let src = r#"import "io"
+import "process"
+fn main() Result<void, io.Error> {
+    var input: Vec<u8> = Vec.new()
+    var index = 0
+    for index < 524288 {
+        input.push(u8(index % 251))
+        index = index + 1
+    }
+    child := try process.Command.new("HELPER").arg("echo-stdin").stdin(process.Stdio.Piped).stdout(process.Stdio.Piped).stderr(process.Stdio.Piped).start_child()
+    output := try child.communicate(input)
+    print(output.status.success())
+    print(output.stdout.len())
+    print(output.stdout.as_slice()[524287])
+    print(try output.stderr_text())
+    // A child that exits without reading its input is not an error.
+    quick := try process.Command.new("HELPER").arg("exit").arg("4").stdin(process.Stdio.Piped).start_child()
+    var large: Vec<u8> = Vec.new()
+    index = 0
+    for index < 262144 {
+        large.push(1)
+        index = index + 1
+    }
+    early := try quick.communicate(large)
+    print(early.status.success())
+    return Ok(())
+}
+"#;
+    let (dir, res) = checked(src, "communicate");
+    let exe = build(&dir, &res);
+    success(&run(&exe), "true\n524288\n199\ne\nfalse\n");
+    std::fs::remove_dir_all(dir).unwrap();
+}
+#[test]
+fn async_pipes_and_completion_do_not_block_the_executor() {
+    let src = r#"import "io"
+import "process"
+import "runtime"
+async fn session() Result<usize, io.Error> {
+    var child = try process.Command.new("HELPER").arg("echo-stdin").stdin(process.Stdio.Piped).stdout(process.Stdio.Piped).stderr(process.Stdio.Null).start_child()
+    input := child.stdin
+    child.stdin = None
+    match input {
+        Some(pipe) => {
+            var writer = pipe
+            try writer.set_nonblocking(true)
+            message := "ping-pong"
+            try await writer.write_all_async(message.bytes())
+            writer.close()
+        }
+        None => {}
+    }
+    output := child.stdout
+    child.stdout = None
+    var total = usize(0)
+    match output {
+        Some(pipe) => {
+            var reader = pipe
+            try reader.set_nonblocking(true)
+            var buffer = [4]u8{0, 0, 0, 0}
+            for {
+                count := try await reader.read_async(&mut buffer)
+                if count == 0 { break }
+                total = total + count
+            }
+        }
+        None => {}
+    }
+    status := try await child.process.wait_async()
+    if !status.success() { return Err(io.Error.new(io.ErrorKind.OtherOs)) }
+    return Ok(total)
+}
+fn main() Result<void, io.Error> {
+    execution := try runtime.Execution.new()
+    var op = runtime.Operation.new(&execution, session())
+    print(try (try execution.block_on(&mut op)))
+    return Ok(())
+}
+"#;
+    let (dir, res) = checked(src, "async");
+    let exe = build(&dir, &res);
+    success(&run(&exe), "9\n");
+    std::fs::remove_dir_all(dir).unwrap();
+}

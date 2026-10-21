@@ -890,7 +890,8 @@ destruction never performs I/O, so flushing is always explicit.
 
 ADR 0041. Trusted stdlib modules are core, io, time, net, runtime, fs, process
 and ffi, embedded in the driver (`TRUSTED_STDLIB`). Layers: time and net build
-on io; runtime builds on io, time and net; fs and process build on io; ffi is
+on io; runtime builds on io, time and net; fs builds on io; process builds on io,
+net and fs (ADR 0070, 0071); ffi is
 standalone; no import cycles. Ordinary stdlib modules (http, https, path,
 string, json, os, console, collections, csv, websocket) are plain Tarn with no intrinsic
 authority (`ORDINARY_STDLIB`). Private access follows that graph downward only:
@@ -1136,6 +1137,13 @@ Detailed requirements and open choices: [dependency security](docs/dependency-se
   signatures. Native ABI helpers never infer ownership or maintain owner bits.
 - EINTR retry for consuming wait stays within its native bridge; Linux close
   is never retried. See [ADR 0045](docs/adr/0045-blocking-processes.md).
+- Bounded waits observe completion without reaping (WNOWAIT); the owning
+  wait/destruction stays the single reap. Handoffs make a one-shot Launch
+  that consumes them at launch (child fd 3 + k); nothing else is inherited.
+  Child fields drop pipes before the wait. See [ADR 0070](docs/adr/0070-process-handoff-and-bounded-waits.md)
+  and [ADR 0071](docs/adr/0071-one-shot-launch-and-piped-stdio.md). Async
+  waits own a pidfd; abandonment destroys the Process, which still waits
+  ([ADR 0072](docs/adr/0072-communicate-and-async-processes.md)).
 
 ## Stable path rules (Phase 15C)
 
