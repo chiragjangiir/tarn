@@ -1205,6 +1205,11 @@ void tarn_rt_process_read(TarnNetRaw *out, int32_t fd, uint8_t *bytes, uint64_t 
     net_init(out); ssize_t result = read(fd, bytes, len); out->value = result;
     if (result < 0) process_error(out, errno);
 }
+void tarn_rt_process_terminate(TarnNetRaw *out, int32_t pid) {
+    net_init(out);
+    if (pid <= 0) { process_error(out, EINVAL); return; }
+    if (kill(pid, SIGTERM) < 0) process_error(out, errno);
+}
 void tarn_rt_process_kill(TarnNetRaw *out, int32_t pid) {
     net_init(out);
     if (pid <= 0) { process_error(out, EINVAL); return; }
@@ -1244,7 +1249,11 @@ static int64_t tarn_console_output(int32_t fd, const uint8_t *data, uint64_t cou
     int already_pending = sigismember(&pending, SIGPIPE);
     int64_t result = flush ? (int64_t)fflush(NULL) : (int64_t)write(fd, data, (size_t)count);
     int saved = errno;
-    if (result < 0 && saved == EPIPE && !already_pending && !sigismember(&old, SIGPIPE)) {
+    /* A pipe write that loses its reader midway returns a partial count and
+     * still raises SIGPIPE, so consume any SIGPIPE this call generated, not
+     * only the EPIPE case (ADR 0073 regression). */
+    sigset_t after;
+    if (!already_pending && !sigismember(&old, SIGPIPE) && sigpending(&after) == 0 && sigismember(&after, SIGPIPE)) {
         struct timespec zero = {0, 0};
         while (sigtimedwait(&blocked, NULL, &zero) < 0 && errno == EINTR) {}
     }

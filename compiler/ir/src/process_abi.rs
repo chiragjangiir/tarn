@@ -57,6 +57,7 @@ pub(crate) fn verify(t: &Typed) -> Vec<String> {
         ("wait", vec![Ty::Adt(child, vec![])]),
         ("close", vec![Ty::Adt(pipe, vec![])]),
         ("kill", vec![scalar.clone()]),
+        ("terminate", vec![scalar.clone()]),
         (
             "read",
             vec![

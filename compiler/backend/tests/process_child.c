@@ -1,10 +1,13 @@
 #define _POSIX_C_SOURCE 200809L
+#include <time.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <signal.h>
+static void on_term(int signal) { (void)signal; _exit(42); }
 static void all(int fd, const void *bytes, size_t count) {
     const char *p = bytes;
     while (count) { ssize_t n = write(fd, p, count); if (n < 0 && errno == EINTR) continue; if (n <= 0) exit(90); p += n; count -= (size_t)n; }
@@ -29,6 +32,24 @@ int main(int argc, char **argv) {
         return 0;
     }
     if (!strcmp(argv[1], "exit")) return atoi(argv[2]);
+    if (!strcmp(argv[1], "read-one-late")) {
+        /* Leave the parent blocked in a large write, then vanish mid-write. */
+        char byte; if (read(0, &byte, 1) != 1) return 100;
+        struct timespec pause_for = {0, 200000000}; nanosleep(&pause_for, NULL);
+        return 0;
+    }
+    if (!strcmp(argv[1], "graceful")) {
+        /* ADR 0073: exit 42 on SIGTERM, after announcing readiness. */
+        struct sigaction action; memset(&action, 0, sizeof(action)); action.sa_handler = on_term;
+        if (sigaction(SIGTERM, &action, NULL) != 0) return 99;
+        all(1, "ready\n", 6);
+        for (;;) pause();
+    }
+    if (!strcmp(argv[1], "stubborn")) {
+        signal(SIGTERM, SIG_IGN);
+        all(1, "ready\n", 6);
+        for (;;) pause();
+    }
     if (!strcmp(argv[1], "write-fds")) { all(3, "file\n", 5); all(4, "s", 1); return 0; }
     if (!strcmp(argv[1], "echo-stdin")) {
         /* ADR 0071: copy stdin to stdout until end of file, then mark stderr. */

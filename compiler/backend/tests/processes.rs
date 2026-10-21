@@ -855,3 +855,97 @@ fn main() Result<void, io.Error> {
     success(&run(&exe), "9\n");
     std::fs::remove_dir_all(dir).unwrap();
 }
+#[test]
+fn terminate_allows_graceful_exit_and_escalates_to_kill() {
+    // ADR 0073: SIGTERM first; a child that ignores it is killed after a
+    // bounded wait. Both remain owned and are reaped exactly once.
+    let src = r#"import "io"
+import "process"
+fn ready(stdout Option<process.ChildStdout>) Result<void, io.Error> {
+    match stdout {
+        Some(pipe) => {
+            var reader = pipe
+            var bytes = [6]u8{0, 0, 0, 0, 0, 0}
+            var offset = usize(0)
+            for offset < usize(6) { offset = offset + try reader.read(&mut bytes[offset..]) }
+            return Ok(())
+        }
+        None => { return Err(io.Error.new(io.ErrorKind.InvalidInput)) }
+    }
+}
+fn stop(child process.Child) Result<string, io.Error> {
+    var owned = child
+    var how = "terminated"
+    try owned.process.terminate()
+    match try owned.process.wait_timeout(500) {
+        Some(status) => {}
+        None => {
+            how = "killed"
+            try owned.process.kill()
+        }
+    }
+    status := try owned.wait()
+    match status.code() { Some(code) => { if code == 42 { return Ok(how + " 42") } }
+        None => {} }
+    match status.signal() { Some(signal) => { if signal == 9 { return Ok(how + " 9") } }
+        None => {} }
+    return Ok(how + " ?")
+}
+fn main() Result<void, io.Error> {
+    var graceful = try process.Command.new("HELPER").arg("graceful").stdout(process.Stdio.Piped).start_child()
+    out := graceful.stdout
+    graceful.stdout = None
+    readiness := ready(out)
+    print(try stop(graceful))
+    try readiness
+    var stubborn = try process.Command.new("HELPER").arg("stubborn").stdout(process.Stdio.Piped).start_child()
+    pipe := stubborn.stdout
+    stubborn.stdout = None
+    waiting := ready(pipe)
+    print(try stop(stubborn))
+    try waiting
+    return Ok(())
+}
+"#;
+    let (dir, res) = checked(src, "terminate");
+    let exe = build(&dir, &res);
+    success(&run(&exe), "terminated 42\nkilled 9\n");
+    std::fs::remove_dir_all(dir).unwrap();
+}
+#[test]
+fn reader_vanishing_mid_write_is_broken_pipe_not_sigpipe() {
+    // Regression: a blocked pipe write whose reader exits returns a partial
+    // count while Linux still raises SIGPIPE; it used to kill the parent.
+    let src = r#"import "io"
+import "process"
+fn main() Result<void, io.Error> {
+    var data: Vec<u8> = Vec.new()
+    var index = 0
+    for index < 1048576 {
+        data.push(7)
+        index = index + 1
+    }
+    var child = try process.Command.new("HELPER").arg("read-one-late").stdin(process.Stdio.Piped).start_child()
+    input := child.stdin
+    child.stdin = None
+    match input {
+        Some(pipe) => {
+            var writer = pipe
+            match writer.write_all(data.as_slice()) {
+                Ok(value) => { print("written") }
+                Err(error) => { print(error.kind == io.ErrorKind.BrokenPipe) }
+            }
+        }
+        None => {}
+    }
+    print((try child.wait()).success())
+    return Ok(())
+}
+"#;
+    let (dir, res) = checked(src, "mid-write");
+    let exe = build(&dir, &res);
+    for _ in 0..3 {
+        success(&run(&exe), "true\ntrue\n");
+    }
+    std::fs::remove_dir_all(dir).unwrap();
+}

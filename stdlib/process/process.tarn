@@ -62,6 +62,7 @@ extern "intrinsic" fn _poll_exit(pid i32, timeout i32) io._Raw
 extern "intrinsic" fn _wait(child Process) io._Raw
 extern "intrinsic" fn _close(pipe _Pipe) io._Raw
 extern "intrinsic" fn _kill(pid i32) io._Raw
+extern "intrinsic" fn _terminate(pid i32) io._Raw
 extern "intrinsic" fn _read(fd i32, data &mut []u8) io._Raw
 extern "intrinsic" fn _write(fd i32, data &[]u8) io._Raw
 extern "intrinsic" fn _pidfd(pid i32) io._Raw
@@ -503,6 +504,14 @@ pub fn Process.wait_timeout(&mut self, millis i32) Result<Option<ExitStatus>, io
 /// Requests SIGKILL for this child; it still must be waited/reaped.
 pub fn Process.kill(&mut self) Result<void, io.Error> {
     try io._check(_kill(self.pid))
+    return Ok(())
+}
+/// Requests SIGTERM, letting the child shut down cleanly (ADR 0073). It keeps
+/// ownership and must still be waited; escalate with `wait_timeout` + `kill`.
+/// Signalling an exited but unreaped child is harmless: the pid stays owned
+/// until `wait`, so it can never reach a recycled process.
+pub fn Process.terminate(&mut self) Result<void, io.Error> {
+    try io._check(_terminate(self.pid))
     return Ok(())
 }
 pub fn ExitStatus.success(&self) bool {

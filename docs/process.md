@@ -130,7 +130,9 @@ var child = try process.Command.new("server").arg("--fd=3").stdout(process.Stdio
 `try_wait(&mut self)` and `wait_timeout(&mut self, millis)` return
 `Option<ExitStatus>`: None means the child is still running and still owned.
 They observe completion without reaping it, so `wait()` or destruction remains
-the single completion and returns at once afterwards. A bounded shutdown is
-`wait_timeout`, then `kill()` and `wait()`. A negative timeout is InvalidInput.
+the single completion and returns at once afterwards. `terminate()` requests SIGTERM
+and `kill()` SIGKILL; both keep ownership. A graceful bounded shutdown is
+`terminate()`, `wait_timeout(ms)`, then `kill()` if still running, and finally
+`wait()` (ADR 0073). A negative timeout is InvalidInput.
 Destruction still waits and never kills: kill a child that may never exit
 before an error path can destroy it.
