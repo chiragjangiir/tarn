@@ -11,13 +11,16 @@ pub enum Capability { Transfer, Share }
 pub struct NativeCapabilities { pub transfer: bool, pub share: bool }
 
 impl Decls {
-    /// Resource containment, independent of initialization. Unknown generic
-    /// substitutions may contain tasks; cycles conservatively retain loans.
-    /// Conservative semantic reference containment for deferred borrowed task
-    /// results. This is declaration inspection, not a second provenance analysis.
+    /// Conservative semantic reference containment. This is declaration
+    /// inspection, not a second provenance analysis. Containment is
+    /// existential, hence inductive (ADR 0074): revisiting the exact type
+    /// already on the path adds nothing, so a cycle answers false and any
+    /// reference is found through another branch. The dual of coinductive
+    /// Transfer/Share (ADR 0033). Exhausted depth or budget stays true.
     pub fn may_contain_references(&self, ty: &Ty) -> bool {
         fn visit(d: &Decls, ty: &Ty, path: &mut Vec<Ty>, budget: &mut usize) -> bool {
-            if *budget == 0 || path.len() >= 64 || path.contains(ty) { return true; }
+            if path.contains(ty) { return false; }
+            if *budget == 0 || path.len() >= 64 { return true; }
             *budget -= 1;
             path.push(ty.clone());
             let answer = match ty {
@@ -55,9 +58,12 @@ impl Decls {
         self.contains_resource(ty, self.task)
     }
 
+    /// Resource containment, independent of initialization; inductive like
+    /// reference containment. Unknown generic substitutions may contain one.
     fn contains_resource(&self, ty: &Ty, target: Option<tarn_resolve::SymbolId>) -> bool {
         fn visit(d: &Decls, ty: &Ty, path: &mut Vec<Ty>, budget: &mut usize, target: Option<tarn_resolve::SymbolId>) -> bool {
-            if *budget == 0 || path.len() >= 64 || path.contains(ty) { return true; }
+            if path.contains(ty) { return false; }
+            if *budget == 0 || path.len() >= 64 { return true; }
             *budget -= 1;
             path.push(ty.clone());
             let answer = match ty {

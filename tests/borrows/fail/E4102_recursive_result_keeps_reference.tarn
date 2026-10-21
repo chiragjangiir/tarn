@@ -1,0 +1,15 @@
+// ADR 0074: a recursive type instantiated with a reference still holds the
+// loan through its non-recursive payload.
+enum Tree<T> { Leaf(T)
+    Node(Vec<Tree<T>>) }
+struct Owner { value i32 }
+fn wrap(owner &Owner) Tree<&Owner> { return Tree.Leaf(owner) }
+fn main() {
+    var owner = Owner{value: 0}
+    tree := wrap(&owner)
+    owner.value = 1
+    match tree {
+        Tree.Leaf(item) => { print(item.value) }
+        Tree.Node(children) => {}
+    }
+}

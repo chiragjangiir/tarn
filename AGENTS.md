@@ -423,7 +423,9 @@ and binding. Do not duplicate layout rules in another phase.
 
 Transfer/Share queries are coinductive: a repeated query holds, so recursive
 types such as `enum Tree { Leaf(i32) Node(Vec<Tree>) }` are decided by their
-non-recursive fields. Exhausted depth or budget stays conservative (ADR 0033).
+non-recursive fields. Containment queries (references, guards, tasks,
+wakers) are their inductive dual: a repeated query adds nothing (ADR 0074).
+Exhausted depth or budget stays conservative (ADR 0033).
 
 Dataflow passes (ranges, moves, borrows) visit blocks in reverse postorder
 and keep sparse per-block states. Do not reintroduce dense per-local state

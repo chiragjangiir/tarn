@@ -1,0 +1,19 @@
+// ADR 0074: an owned recursive error returned through a callback holds no
+// loans; the caller may mutate the borrowed owner afterwards.
+enum Details { Empty
+    Nested(Vec<Details>) }
+struct Owner { value i32 }
+struct Failure { details Details }
+fn invoke(owner &mut Owner, body mut fn(&mut Owner) Result<void, Failure>) Result<void, Failure> {
+    return body(owner)
+}
+fn main() {
+    var owner = Owner{value: 0}
+    var failure: Option<Failure> = None
+    match invoke(&mut owner, fn(value &mut Owner) Result<void, Failure> { return Err(Failure{details: Details.Nested(Vec.new())}) }) {
+        Ok(_) => {}
+        Err(error) => { failure = Some(error) }
+    }
+    owner.value = 1
+    print(failure.is_some())
+}

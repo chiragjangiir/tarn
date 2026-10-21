@@ -1,0 +1,12 @@
+error[E4102]: cannot assign to `owner.value` because it is borrowed
+  --> tests/borrows/fail/E4102_recursive_result_keeps_reference.tarn:10:5
+   |
+ 9 |     tree := wrap(&owner)
+   |                  ------ shared borrow of `owner` starts here
+10 |     owner.value = 1
+   |     ^^^^^^^^^^^^^^^ assigned here while borrowed
+12 |         Tree.Leaf(item) => { print(item.value) }
+   |         --------------- the borrow is still used here
+   |
+   = note: a borrow lasts until the last use of the reference that holds it
+

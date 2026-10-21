@@ -190,7 +190,7 @@ fields/payloads. Neither implies Copy or the other capability. Shared references
 require Share referents, mutable references require Transfer referents and are not
 Share. Task<R> requires Transfer for R and is never Share. Recursive queries are
 coinductive (a repeated query holds; amended after a recursive `Tree` with
-`Vec<Tree>` could never be Transfer) and stop conservatively at depth 64 or 4096 nodes. Unknown resources default to neither;
+`Vec<Tree>` could never be Transfer) and stop conservatively at depth 64 or 4096 nodes. Containment queries are the inductive dual (ADR 0074). Unknown resources default to neither;
 explicit NativeCapabilities entries in Decls grant trusted type/interface evidence.
 Dynamic method sets and concrete implementations alone grant no erased capability.
 
