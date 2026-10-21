@@ -1,6 +1,6 @@
 #!/bin/sh
 set -eu
-VERSION=0.0.4
+VERSION=0.0.5
 PREFIX="${HOME}/.local/bin"
 FORCE=0
 UNINSTALL=0
