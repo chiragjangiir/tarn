@@ -20,7 +20,7 @@ pub struct DirEntry {
     text string
     location string
 }
-extern "intrinsic" fn _open(path &string, mode i32) io._Raw
+extern "intrinsic" fn _open(path &string, mode i32, permissions i32) io._Raw
 extern "intrinsic" fn _read(fd i32, data &mut []u8) io._Raw
 extern "intrinsic" fn _write(fd i32, data &[]u8) io._Raw
 extern "intrinsic" fn _seek(fd i32, offset i64, origin i32) io._Raw
@@ -28,7 +28,7 @@ extern "intrinsic" fn _metadata(path &string) io._Raw
 extern "intrinsic" fn _file_metadata(fd i32) io._Raw
 extern "intrinsic" fn _sync(fd i32) io._Raw
 extern "intrinsic" fn _close(value File) io._Raw
-extern "intrinsic" fn _mkdir(path &string) io._Raw
+extern "intrinsic" fn _mkdir(path &string, permissions i32) io._Raw
 extern "intrinsic" fn _remove_file(path &string) io._Raw
 extern "intrinsic" fn _remove_dir(path &string) io._Raw
 extern "intrinsic" fn _rename(from &string, to &string) io._Raw
@@ -39,9 +39,10 @@ fn _interrupted(raw io._Raw) bool { return raw.domain == 3 && raw.code == 4 }
 fn _info(raw io._Raw) Metadata {
     return Metadata{len: u64(raw.value), is_file: raw.address[0] == 1, is_dir: raw.address[0] == 2}
 }
-fn _opening(path &string, mode i32) Result<File, io.Error> {
+fn _opening(path &string, mode i32) Result<File, io.Error> { return _opening_with(path, mode, 0o666) }
+fn _opening_with(path &string, mode i32, permissions i32) Result<File, io.Error> {
     for {
-        raw := _open(path, mode)
+        raw := _open(path, mode, permissions)
         if _interrupted(raw) { continue }
         checked := try io._check(raw)
         file := File{fd: i32(checked.value)}
@@ -59,6 +60,17 @@ pub fn File.append(path &string) Result<File, io.Error> { return _opening(path, 
 pub fn File.open_read_write(path &string) Result<File, io.Error> { return _opening(path, 3) }
 /// Atomic create-if-absent; existing paths return AlreadyExists.
 pub fn File.create_new(path &string) Result<File, io.Error> { return _opening(path, 4) }
+// ADR 0075: only rwx bits; setuid, setgid and sticky are InvalidInput.
+fn _permissions(mode u32) Result<i32, io.Error> {
+    if mode > 0o777 { return Err(io._fail(io.ErrorKind.InvalidInput)) }
+    return Ok(i32(mode))
+}
+/// Like `create_new`, but created with `mode` (for example `0o600`) in the
+/// same system call, so the file is never visible with wider permissions.
+/// The process umask can only remove bits, as for every Linux creation.
+pub fn File.create_new_with_mode(path &string, mode u32) Result<File, io.Error> {
+    return _opening_with(path, 4, try _permissions(mode))
+}
 pub fn File.read(&mut self, data &mut []u8) Result<usize, io.Error> {
     for {
         raw := _read(self.fd, data)
@@ -192,9 +204,13 @@ pub fn exists(path &string) Result<bool, io.Error> {
         }
     }
 }
-pub fn create_dir(path &string) Result<void, io.Error> {
+pub fn create_dir(path &string) Result<void, io.Error> { return _create_dir(path, 0o777) }
+/// Like `create_dir`, but created with `mode` (for example `0o700`) atomically;
+/// the umask can only remove bits (ADR 0075).
+pub fn create_dir_with_mode(path &string, mode u32) Result<void, io.Error> { return _create_dir(path, try _permissions(mode)) }
+fn _create_dir(path &string, permissions i32) Result<void, io.Error> {
     for {
-        raw := _mkdir(path)
+        raw := _mkdir(path, permissions)
         if _interrupted(raw) { continue }
         try io._check(raw)
         return Ok(())

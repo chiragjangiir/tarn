@@ -44,7 +44,7 @@ pub(crate) fn verify(t: &Typed) -> Vec<String> {
     let path = Ty::Ref(false, Box::new(Ty::Str));
     let bytes = Ty::Slice(Box::new(Ty::Int(IntTy::U8)));
     let operations = [
-        ("open", vec![path.clone(), i32_ty.clone()]),
+        ("open", vec![path.clone(), i32_ty.clone(), i32_ty.clone()]),
         (
             "read",
             vec![i32_ty.clone(), Ty::Ref(true, Box::new(bytes.clone()))],
@@ -59,9 +59,9 @@ pub(crate) fn verify(t: &Typed) -> Vec<String> {
         ),
         ("metadata", vec![path.clone()]),
         ("file_metadata", vec![i32_ty.clone()]),
-        ("sync", vec![i32_ty]),
+        ("sync", vec![i32_ty.clone()]),
         ("close", vec![Ty::Adt(file, vec![])]),
-        ("mkdir", vec![path.clone()]),
+        ("mkdir", vec![path.clone(), i32_ty]),
         ("remove_file", vec![path.clone()]),
         ("remove_dir", vec![path.clone()]),
         ("rename", vec![path.clone(), path.clone()]),

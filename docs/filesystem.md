@@ -25,6 +25,7 @@ fn main() Result<void, io.Error> {
 | File.open / fs.open | Existing regular file, read-only |
 | File.create | Read/write, create or truncate |
 | File.create_new | Exclusive read/write creation; AlreadyExists on conflict |
+| File.create_new_with_mode | Same, created with `mode` (e.g. `0o600`) in the creating syscall (ADR 0075) |
 | File.append | Write-only, create if absent, OS append writes |
 | File.open_read_write | Existing regular file, read/write |
 | read / write | &mut self, borrowed slices, actual partial byte count |
@@ -38,6 +39,7 @@ fn main() Result<void, io.Error> {
 | fs.metadata | Metadata with len, is_file, is_dir; follows symlinks |
 | fs.exists | Result<bool>, propagates errors other than absence/non-directory |
 | create_dir / remove_dir | One directory / empty directory only |
+| create_dir_with_mode | One directory created with `mode` (e.g. `0o700`) atomically (ADR 0075) |
 | remove_file / rename | Linux unlink / rename semantics |
 | read_dir | Owned Vec<DirEntry>, unspecified order; excludes '.'/'..' |
 | DirEntry.name / path / metadata | Borrowed UTF-8 strings / current path metadata |
@@ -70,3 +72,14 @@ an application error. See [ADR 0043](adr/0043-blocking-filesystem.md).
 For owned lexical paths, use [the path module](path.md) and pass
 `Path.as_string()` to these APIs. Filesystem operations do not implicitly
 normalize paths or cancel `..`, preserving symlink-sensitive lookup semantics.
+
+## Creation modes (ADR 0075)
+
+`File.create_new_with_mode(path, mode)` and `create_dir_with_mode(path, mode)`
+pass `mode` to the creating `open`/`mkdir`, so a private file or directory is
+never visible with wider permissions. A later chmod would leave such a window.
+Only the rwx bits (`0o777`) are accepted; setuid, setgid and sticky bits are
+InvalidInput and create nothing. As with every Linux creation, the process
+umask can only remove bits: `0o600`/`0o700` are exact under any usual umask,
+while `0o666` becomes `0o644` under umask 022. Plain `create`/`create_dir`
+keep `0o666`/`0o777` before umask.

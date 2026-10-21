@@ -418,3 +418,59 @@ fn previously_unhandled_io_error_kinds_exit_normally() {
         std::fs::remove_dir_all(dir).unwrap();
     }
 }
+#[test]
+fn private_files_and_directories_get_exact_modes_at_creation() {
+    // ADR 0075: the mode is applied by the creating syscall itself, under the
+    // common umask 022 that turned plain create/create_dir into 0644/0755.
+    use std::os::unix::fs::PermissionsExt;
+    let src = r#"import "io"
+import "fs"
+fn kind(result Result<fs.File, io.Error>) string {
+    match result {
+        Ok(file) => { return "created" }
+        Err(error) => {
+            if error.kind == io.ErrorKind.AlreadyExists { return "exists" }
+            if error.kind == io.ErrorKind.InvalidInput { return "invalid" }
+            return "other"
+        }
+    }
+}
+fn main() Result<void, io.Error> {
+    try fs.create_dir_with_mode(&"ROOT/data/private", 0o700)
+    var capture = try fs.File.create_new_with_mode(&"ROOT/data/private/capture.png", 0o600)
+    try capture.write_all("pixels".bytes())
+    try capture.close()
+    print(kind(fs.File.create_new_with_mode(&"ROOT/data/private/capture.png", 0o600)))
+    print(kind(fs.File.create_new_with_mode(&"ROOT/data/private/setuid", 0o4700)))
+    match fs.create_dir_with_mode(&"ROOT/data/private", 0o700) {
+        Ok(value) => { print("created") }
+        Err(error) => { print(error.kind == io.ErrorKind.AlreadyExists) }
+    }
+    match fs.create_dir_with_mode(&"ROOT/data/sticky", 0o1777) {
+        Ok(value) => { print("created") }
+        Err(error) => { print(error.kind == io.ErrorKind.InvalidInput) }
+    }
+    try fs.File.create_new_with_mode(&"ROOT/data/shared", 0o666)
+    try fs.create_dir(&"ROOT/data/plain")
+    return Ok(())
+}
+"#;
+    let (dir, res) = checked(src, "modes");
+    let exe = build(&dir, &res);
+    let out = Command::new("sh")
+        .args(["-c", "umask 022 && exec timeout 30s \"$0\""])
+        .arg(&exe)
+        .env("TARN_TRACE_FS", "1")
+        .output()
+        .unwrap();
+    success(&out, "exists\ninvalid\ntrue\ntrue\n");
+    let mode = |path: &str| std::fs::metadata(dir.join(path)).unwrap().permissions().mode() & 0o7777;
+    assert_eq!(mode("data/private"), 0o700);
+    assert_eq!(mode("data/private/capture.png"), 0o600);
+    assert_eq!(std::fs::read(dir.join("data/private/capture.png")).unwrap(), b"pixels");
+    // Rejected modes create nothing; the umask still removes bits as usual.
+    assert!(!dir.join("data/private/setuid").exists() && !dir.join("data/sticky").exists());
+    assert_eq!(mode("data/shared"), 0o644);
+    assert_eq!(mode("data/plain"), 0o755);
+    std::fs::remove_dir_all(dir).unwrap();
+}

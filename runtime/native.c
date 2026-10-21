@@ -900,7 +900,8 @@ static char *fs_path(TarnNetRaw *out, const TarnString *path) {
     text[path->len] = 0;
     return text;
 }
-void tarn_rt_fs_open(TarnNetRaw *out, const TarnString *path, int32_t mode) {
+void tarn_rt_fs_open(TarnNetRaw *out, const TarnString *path, int32_t mode, int32_t permissions) {
+    if (permissions < 0 || permissions > 0777) { net_init(out); fs_error(out, EINVAL); return; }
     char *text = fs_path(out, path); if (!text) return;
     int flags;
     switch (mode) {
@@ -913,7 +914,7 @@ void tarn_rt_fs_open(TarnNetRaw *out, const TarnString *path, int32_t mode) {
     }
     /* O_NONBLOCK prevents opening a FIFO from blocking before Tarn rejects
      * non-regular resources. It has no effect on regular-file operations. */
-    fs_status(out, open(text, flags | O_CLOEXEC | O_NONBLOCK, 0666));
+    fs_status(out, open(text, flags | O_CLOEXEC | O_NONBLOCK, (mode_t)permissions));
     free(text);
     if (!out->code) fs_trace("open", (int)out->value);
 }
@@ -945,9 +946,10 @@ void tarn_rt_fs_close(TarnNetRaw *out, int32_t fd) {
     /* Linux releases a valid descriptor even on EINTR; never retry close. */
 }
 void tarn_rt_fs_drop(int32_t fd) { TarnNetRaw out; tarn_rt_fs_close(&out, fd); }
-void tarn_rt_fs_mkdir(TarnNetRaw *out, const TarnString *path) {
+void tarn_rt_fs_mkdir(TarnNetRaw *out, const TarnString *path, int32_t permissions) {
+    if (permissions < 0 || permissions > 0777) { net_init(out); fs_error(out, EINVAL); return; }
     char *text = fs_path(out, path); if (!text) return;
-    fs_status(out, mkdir(text, 0777)); free(text);
+    fs_status(out, mkdir(text, (mode_t)permissions)); free(text);
 }
 void tarn_rt_fs_remove_file(TarnNetRaw *out, const TarnString *path) {
     char *text = fs_path(out, path); if (!text) return;
