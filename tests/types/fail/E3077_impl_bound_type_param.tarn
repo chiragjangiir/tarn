@@ -1,0 +1,16 @@
+// ADR 0078: a type-parameter root cause suggests adding the bound.
+struct Pair<A, B> {
+    first A
+    second B
+}
+impl Eq for Pair<A: Eq, B: Eq> {
+    fn eq(&self, other &Self) bool {
+        return self.first.eq(&other.first) && self.second.eq(&other.second)
+    }
+}
+fn same<T>(a &Pair<T, i32>) bool {
+    return a == a
+}
+fn main() {
+    print(same(&Pair{first: 1, second: 2}))
+}

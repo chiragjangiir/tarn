@@ -1,0 +1,10 @@
+error[E1006]: comparison operators cannot be chained
+ --> tests/parser/fail/E1006_explicit_type_arguments.tarn:2:17
+  |
+2 |     v := Vec<i32>.new()
+  |             - first comparison
+  |                 ^ second comparison
+  |
+  = note: explicit type arguments in expressions are not supported in v0
+  = help: annotate the binding and let inference pick them: `var v: Vec<i32> = Vec.new()`
+

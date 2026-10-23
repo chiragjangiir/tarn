@@ -17,12 +17,12 @@ fn test_signed_decimal_expected_text_and_roundtrip() {
 
 fn test_builder_integer_digit_boundaries() {
     for value in [10]u64 { 0, 1, 9, 10, 19, 99, 100, 101, 1000, 18446744073709551615 } {
-        var builder = string.Builder.new()
+        var builder = Builder.new()
         builder.push_u64(value)
         if builder.finish() != string.from_u64(value) { panic("builder unsigned formatting differs") }
     }
     for value in [7]i64 { 0, -1, -9, -10, -99, -100, -9223372036854775808 } {
-        var builder = string.Builder.new()
+        var builder = Builder.new()
         builder.push_i64(value)
         if builder.finish() != string.from_i64(value) { panic("builder signed formatting differs") }
     }

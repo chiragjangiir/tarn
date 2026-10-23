@@ -1,0 +1,3 @@
+fn main() {
+    v := Vec<i32>.new()
+}

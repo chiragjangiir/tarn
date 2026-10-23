@@ -62,9 +62,9 @@ Patterns counted in 2,898 lines of real Tarn (CRUDs, SQLite wrapper, the
 
 ## Limitations and future evidence
 
-- `Option<T>` and `Result<T, E>` do not implement `Eq`: that needs `impl`
-  bounds (`impl Eq for Option<T: Eq>`), which coherence (ADR 0016) does not
-  allow yet. Compare with `match` or `unwrap_or`.
+- ~~`Option<T>` and `Result<T, E>` do not implement `Eq`~~: resolved by
+  ADR 0078 (bounded impl binders); `core` now declares
+  `impl Eq for Option<T: Eq>` and `impl Eq for Result<T: Eq, E: Eq>`.
 - `Eq` for fieldless enums is written by hand (a match per variant); repeated
   boilerplate across many enums would be evidence for an explicit,
   per-type opt-in helper.

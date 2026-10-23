@@ -1,0 +1,5 @@
+interface Getter<T> {
+    fn get(&self) T
+}
+
+fn main() {}

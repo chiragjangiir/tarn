@@ -1,0 +1,10 @@
+error[E4101]: cannot borrow `count` as shared because it is mutably borrowed
+ --> tests/borrows/fail/E4101_interpolate_while_mutably_borrowed.tarn:4:20
+  |
+3 |     r := &mut count
+  |          ---------- mutable borrow of `count` starts here
+4 |     print(f"count {count}")
+  |                    ^^^^^ shared borrow conflicts here
+  |
+  = note: a borrow lasts until the last use of the reference that holds it
+

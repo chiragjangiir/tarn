@@ -93,3 +93,23 @@ fn native_and_load_failures_are_single_records() {
     }
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+/// ADR 0078: a failed conditional implementation carries its proof chain as
+/// structured data, outermost requirement first, so agents need not parse notes.
+#[test]
+fn json_reports_unsatisfied_impl_bound_chain() {
+    let dir = std::env::temp_dir().join(format!("tarn-cli-json-chain-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let source = dir.join("main.tarn");
+    std::fs::write(
+        &source,
+        "struct Point {\n    x i32\n}\nfn main() {\n    a: Option<Point> := None\n    if a == a { }\n}\n",
+    )
+    .unwrap();
+    let output = invoke("check", &source, &[]);
+    assert_eq!(output.status.code(), Some(1));
+    let text = String::from_utf8(output.stdout).unwrap();
+    assert!(text.contains(r#""code":"E3077""#), "{text}");
+    assert!(text.contains(r#""obligations":[{"type":"Option<Point>","interface":"Eq"},{"type":"Point","interface":"Eq","bound":{"#), "{text}");
+    std::fs::remove_dir_all(&dir).unwrap();
+}

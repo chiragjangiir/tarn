@@ -217,6 +217,7 @@ fn expr(e: &Expr, tokens: &[&Token], out: &mut HashSet<u32>) {
         ExprKind::Int(_)
         | ExprKind::Float(_)
         | ExprKind::Str(_)
+        | ExprKind::Interpolated(_)
         | ExprKind::Bool(_)
         | ExprKind::Unit
         | ExprKind::Ident(_)

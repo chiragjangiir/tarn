@@ -30,6 +30,9 @@ const oniguruma = require(path.join(dependencies, 'vscode-oniguruma'));
     const stringTokens = tokens('text := "fn hello // string"');
     assert.ok(stringTokens.some(t => t.text.includes('fn hello // string') && t.scopes.includes('string.quoted.double.tarn')));
     assert.ok(!stringTokens.some(t => t.scopes.includes('comment.line.double-slash.tarn')));
+    has('msg := f"n={user.name} {{x}}"', 'user.name', 'variable.other.tarn');
+    has('msg := f"n={user.name} {{x}}"', '{{', 'constant.character.escape.tarn');
+    has('msg := f"{a + b}"', '{a + b}', 'invalid.illegal.interpolation.tarn');
     for (const name of ['tarn-diag', 'tarn-res', 'tarn-ast']) {
         const raw = textmate.parseRawGrammar(fs.readFileSync(path.join(__dirname, `../syntaxes/${name}.tmLanguage.json`), 'utf8'), `${name}.json`);
         const other = new textmate.Registry({ onigLib, loadGrammar: async () => raw });

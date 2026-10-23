@@ -1,0 +1,47 @@
+// Conditional implementations (ADR 0078): Eq/Display/Hash through bounded
+// impl binders, nested instances, generic callers and dynamic dispatch.
+import "collections"
+struct Pair<A, B> {
+    first A
+    second B
+}
+impl Display for Pair<A: Display, B: Display> {
+    fn display(&self, out &mut Builder) {
+        out.push(&f"({self.first}, {self.second})")
+    }
+}
+impl Eq for Pair<A: Eq, B: Eq> {
+    fn eq(&self, other &Self) bool {
+        return self.first.eq(&other.first) && self.second.eq(&other.second)
+    }
+}
+fn same<T: Eq>(a &Pair<T, T>, b &Pair<T, T>) bool {
+    return a == b
+}
+fn boxed(v &any Display) string {
+    return f"[{v}]"
+}
+fn main() {
+    p := Pair{first: 1, second: "one"}
+    q := Pair{first: 1, second: "one"}
+    print(p == q)
+    print(f"{p}")
+    print(boxed(&p))
+    nested := Pair{first: Pair{first: true, second: 2}, second: "x"}
+    print(f"{nested}")
+    print(same(&Pair{first: 3, second: 3}, &Pair{first: 3, second: 4}))
+    a: Option<i32> := Some(3)
+    none: Option<i32> := None
+    print(a == Some(3))
+    print(a == none)
+    print(none == None)
+    r: Result<string, i32> := Ok("x")
+    print(r == Ok("x"))
+    print(r != Err(1))
+    print(Some(Pair{first: 1, second: 2}) == Some(Pair{first: 1, second: 2}))
+    var m: collections.Map<Option<i32>, string> = collections.Map.new()
+    m.insert(Some(1), "one")
+    m.insert(None, "none")
+    m.insert(Some(1), "uno")
+    print(m.len())
+}

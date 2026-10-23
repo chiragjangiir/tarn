@@ -1,0 +1,12 @@
+error[E3077]: `Point` does not implement `Eq`
+  --> tests/types/fail/E3077_impl_bound_two_roots.tarn:19:8
+   |
+ 6 | impl Eq for Pair<A: Eq, B: Eq> {
+   |                     -- required by this bound
+19 |     if both == both { }
+   |        ^^^^^^^^^^^^ `==` on `Pair<Point, Color>` requires `Eq`
+   |
+   = note: `Pair<Point, Color>: Eq` needs `Point: Eq`
+   = note: also: `Color` does not implement `Eq`
+   = help: implement it in the module of `Eq` or of `Point`: `impl Eq for Point { ... }`
+

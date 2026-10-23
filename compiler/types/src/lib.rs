@@ -99,6 +99,8 @@ pub struct TypeTables {
     pub method_calls: HashMap<NodeId, MethodTarget>,
     /// `==`/`!=` expression → the `Eq.eq` method it calls (Phase 26C).
     pub eq_ops: HashMap<NodeId, SymbolId>,
+    /// Interpolated value in `f"..."` → the `Display.display` method it calls (ADR 0077).
+    pub interpolations: HashMap<NodeId, SymbolId>,
     /// Method-call expression → receiver adjustment.
     pub receivers: HashMap<NodeId, Receiver>,
     /// Pattern node → enum variant it matches (resolves `ScrutineeVariant`).
@@ -169,6 +171,7 @@ pub fn check(inputs: &[ModuleInput], r: &Resolved) -> (Typed, Vec<Diagnostic>) {
             t.closure_captures.extend(cx.tables.closure_captures);
             t.method_calls.extend(cx.tables.method_calls);
             t.eq_ops.extend(cx.tables.eq_ops);
+            t.interpolations.extend(cx.tables.interpolations);
             t.pattern_variants.extend(cx.tables.pattern_variants);
             t.receivers.extend(cx.tables.receivers);
             t.coercions.extend(cx.tables.coercions);

@@ -1087,6 +1087,7 @@ impl<'a, 'l> Builder<'a, 'l> {
             ExprKind::Unary { op: ast::UnaryOp::Spawn, operand } => self.spawn_task(e, operand, dest),
             ExprKind::Call { callee, args } => self.call(e, callee, args, dest, false),
             ExprKind::Binary { op, lhs, rhs } => self.binary(e, *op, lhs, rhs, dest),
+            ExprKind::Interpolated(parts) => self.interpolate(parts, dest, span),
             ExprKind::Unary { op: ast::UnaryOp::Ref | ast::UnaryOp::RefMut, operand } => {
                 let rv = self.borrow(e, operand);
                 self.assign(dest, rv, span);
@@ -1513,6 +1514,52 @@ impl<'a, 'l> Builder<'a, 'l> {
             }
             _ => self.operand(e),
         }
+    }
+
+    /// `f"a{x}b"` (ADR 0077): `Builder.new()`, one `push` per text piece and
+    /// one `Display.display(&x, &mut b)` per value, then `b.finish()`. Values
+    /// are only borrowed; the checker recorded each `display` method.
+    fn interpolate(&mut self, parts: &[ast::InterpPart], dest: Place, span: Span) {
+        let decls = &self.lx.t.decls;
+        let builder = decls.builder.expect("checked interpolation needs core.Builder");
+        let method = |name: &str| self.lx.r.member(builder, name).expect("core.Builder declares its methods");
+        let (new, push, finish) = (method("new"), method("push"), method("finish"));
+        let bty = Ty::Adt(builder, Vec::new());
+        let b = self.temp(bty.clone(), span);
+        self.finish_call(self.fn_callee(new, Vec::new()), Vec::new(), Vec::new(), Place::local(b), false, false, span);
+        for part in parts {
+            let unit = self.temp(Ty::Void, span);
+            match part {
+                ast::InterpPart::Text(text) => {
+                    let out = self.ref_temp(true, Place::local(b), &bty, span);
+                    let t = self.temp(Ty::Str, span);
+                    self.assign(Place::local(t), Rvalue::Use(Operand::Const(Const::Str(text.clone()))), span);
+                    let text_ref = self.ref_temp(false, Place::local(t), &Ty::Str, span);
+                    self.finish_call(self.fn_callee(push, Vec::new()), vec![out, text_ref], vec![span, span], Place::local(unit), false, false, span);
+                }
+                ast::InterpPart::Value(v) => {
+                    let display = self.tables().interpolations[&v.id];
+                    let (mut place, mut ty) = if self.is_place(v) {
+                        (self.place(v), self.ty(v))
+                    } else {
+                        let ty = self.ty(v);
+                        let t = self.temp(ty.clone(), v.span);
+                        self.expr_into(v, Place::local(t));
+                        (Place::local(t), ty)
+                    };
+                    while let Ty::Ref(_, inner) = ty {
+                        place = place.project(Proj::Deref);
+                        ty = *inner;
+                    }
+                    let value = self.ref_temp(false, place, &ty, v.span);
+                    let out = self.ref_temp(true, Place::local(b), &bty, span);
+                    let callee = Callee::Virtual { method: display, type_args: Vec::new() };
+                    self.finish_call(callee, vec![value, out], vec![v.span, span], Place::local(unit), false, false, span);
+                }
+            }
+        }
+        let owned = self.read(Place::local(b), &bty);
+        self.finish_call(self.fn_callee(finish, Vec::new()), vec![owned], vec![span], dest, false, false, span);
     }
 
     fn fn_callee(&self, s: SymbolId, type_args: Vec<Ty>) -> Callee {

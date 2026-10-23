@@ -42,6 +42,15 @@ pub struct FnCx<'e, 'a> {
     assigned: Option<NodeId>,
 }
 
+/// One step of an implementation proof: `ty` must implement `interface`,
+/// required by the impl bound at `bound` (ADR 0078).
+#[derive(Clone)]
+struct Obligation {
+    ty: Ty,
+    interface: SymbolId,
+    bound: Option<Span>,
+}
+
 fn peel(t: &Ty) -> (Ty, Option<bool>) {
     let mut t = t.clone();
     let mut through = None;
@@ -156,7 +165,12 @@ impl<'e, 'a> FnCx<'e, 'a> {
             let applied = match (&ai, &xi) {
                 (Ty::Array(ae, _), Ty::Slice(xe)) => self.infer.unify(ae, xe).then_some(CoercionKind::Unsize),
                 (Ty::Any(i), Ty::Any(j)) if i == j => Some(CoercionKind::None),
-                (_, Ty::Any(iface)) => self.implements(&ai, *iface).then_some(CoercionKind::ToDyn(*iface)),
+                (_, Ty::Any(iface)) => {
+                    let iface = *iface;
+                    // A bounded impl that does not apply reports its cause and
+                    // stands in for the coercion, avoiding a second mismatch.
+                    (self.implements(&ai, iface) || self.report_unmet(span, "coercion to `any`", &ai, iface)).then_some(CoercionKind::ToDyn(iface))
+                }
                 _ => self.infer.unify(&ai, &xi).then_some(CoercionKind::None),
             };
             if let Some(kind) = applied {
@@ -189,6 +203,45 @@ impl<'e, 'a> FnCx<'e, 'a> {
     }
 
     fn implements(&self, t: &Ty, iface: SymbolId) -> bool {
+        self.unmet(t, iface, 0).is_empty()
+    }
+
+    /// Why `t` does not implement `iface` (ADR 0078): one chain per distinct
+    /// failure, outermost requirement first; empty when it does. Bounded
+    /// impls require their conditions of the type arguments, recursively.
+    fn unmet(&self, t: &Ty, iface: SymbolId, depth: usize) -> Vec<Vec<Obligation>> {
+        let z = self.infer.zonk(t);
+        let step = |bound| Obligation { ty: z.clone(), interface: iface, bound };
+        // A literal still being inferred stands for its default type.
+        let probe = match z {
+            Ty::Var(v) if self.infer.kind(v) == VarKind::Int => Ty::Int(IntTy::I64),
+            Ty::Var(v) if self.infer.kind(v) == VarKind::Float => Ty::Float(FloatTy::F64),
+            _ => z.clone(),
+        };
+        if !self.implements_head(&probe, iface) {
+            return vec![vec![step(None)]];
+        }
+        let Ty::Adt(target, args) = &z else { return Vec::new() };
+        let Some(conditions) = self.env.decls.impl_conditions.get(&(iface, *target)) else { return Vec::new() };
+        // Types are finite, so this only guards against a bug; exhausting it
+        // stays conservative (ADR 0033).
+        if depth > 64 {
+            return vec![vec![step(None)]];
+        }
+        let mut out = Vec::new();
+        for (index, required, bound) in conditions {
+            let Some(arg) = args.get(*index) else { continue };
+            for mut chain in self.unmet(arg, *required, depth + 1) {
+                chain[0].bound = Some(*bound);
+                chain.insert(0, step(None));
+                out.push(chain);
+            }
+        }
+        out
+    }
+
+    /// `t` has an implementation of `iface`, ignoring impl conditions.
+    fn implements_head(&self, t: &Ty, iface: SymbolId) -> bool {
         if Some(iface) == self.env.decls.transfer {
             return self.env.decls.capability(&self.infer.zonk(t), crate::Capability::Transfer);
         }
@@ -204,6 +257,98 @@ impl<'e, 'a> FnCx<'e, 'a> {
             Ty::Opaque | Ty::Error => true,
             _ => false,
         }
+    }
+
+    /// `{v}` in `f"..."`: a value whose type implements `Display`, reached
+    /// through any number of references (ADR 0077).
+    fn interpolated_value(&mut self, v: &Expr) {
+        let t = self.expr(v, None);
+        let z = self.infer.zonk(&t);
+        let (inner, _) = peel(&z);
+        if matches!(inner, Ty::Opaque | Ty::Error) {
+            return;
+        }
+        // Every integer type implements `Display`, so a literal still being
+        // inferred is accepted; specialization resolves its final type.
+        let int_literal = matches!(inner, Ty::Var(var) if self.infer.kind(var) == VarKind::Int);
+        let display = self.env.decls.display;
+        if let Some(display) = display
+            && (int_literal || self.implements(&inner, display))
+            && let Some(method) = self.env.r.member(display, "display")
+        {
+            self.tables.interpolations.insert(v.id, method);
+            return;
+        }
+        if let Some(display) = display
+            && self.report_unmet(v.span, "interpolation", &inner, display)
+        {
+            return;
+        }
+        let shown = self.show(&inner);
+        let mut d = Diagnostic::error("E3076", "not_displayable", format!("`{shown}` cannot be interpolated into a string"))
+            .primary(v.span, format!("this is `{shown}`, which does not implement `Display`"));
+        d = match inner {
+            Ty::Adt(..) => d.help(format!("implement it: `impl Display for {shown} {{ fn display(&self, out &mut Builder) {{ ... }} }}`")),
+            Ty::Float(_) => d.help("convert it first: `text := string.from_f64(value)`, then interpolate `{text}`"),
+            Ty::Var(var) if self.infer.kind(var) == VarKind::Float => {
+                d.help("convert it first: `text := string.from_f64(value)`, then interpolate `{text}`")
+            }
+            _ => d.note("integers, `bool`, `string` and types implementing `Display` can be interpolated"),
+        };
+        self.err(d);
+    }
+
+    /// E3077 when `t` has an implementation of `iface` whose bounds fail
+    /// (ADR 0078): root cause first, the bound that required it, the chain
+    /// and a fix that coherence allows. Returns false, reporting nothing,
+    /// when `t` has no implementation at all; callers keep their own error.
+    fn report_unmet(&mut self, span: Span, site: &str, t: &Ty, iface: SymbolId) -> bool {
+        let chains = self.unmet(t, iface, 0);
+        if chains.is_empty() || chains.iter().all(|c| c.len() < 2) {
+            return false;
+        }
+        let mut roots: Vec<Vec<Obligation>> = Vec::new();
+        for chain in chains {
+            let root = chain.last().expect("chains are non-empty");
+            if !roots.iter().any(|r| r.last().is_some_and(|x| x.ty == root.ty && x.interface == root.interface)) {
+                roots.push(chain);
+            }
+        }
+        let iname = |s: &Self, i: SymbolId| s.env.r.symbol(i).name.clone();
+        let first = &roots[0];
+        let root = first.last().unwrap();
+        let (root_ty, root_iface) = (self.show(&root.ty), iname(self, root.interface));
+        let outer = self.show(&first[0].ty);
+        let mut d = Diagnostic::error("E3077", "impl_bound_not_satisfied", format!("`{root_ty}` does not implement `{root_iface}`"))
+            .primary(span, format!("{site} on `{outer}` requires `{}`", iname(self, iface)));
+        if let Some(bound) = root.bound {
+            d = d.secondary(bound, "required by this bound");
+        }
+        let shown: Vec<String> = first.iter().map(|o| format!("`{}: {}`", self.show(&o.ty), iname(self, o.interface))).collect();
+        let path = if shown.len() > 3 {
+            format!("{} needs ... {} more ... needs {} needs {}", shown[0], shown.len() - 3, shown[shown.len() - 2], shown[shown.len() - 1])
+        } else {
+            shown.join(" needs ")
+        };
+        d = d.note(path);
+        for other in roots.iter().skip(1).take(2) {
+            let r = other.last().unwrap();
+            d = d.note(format!("also: `{}` does not implement `{}`", self.show(&r.ty), iname(self, r.interface)));
+        }
+        d = d.help(match &root.ty {
+            Ty::Param(p) => format!(
+                "add the bound to the generic parameter: `{}: {root_iface}`",
+                self.env.decls.param_names.get(p).cloned().unwrap_or_else(|| root_ty.clone())
+            ),
+            Ty::Adt(..) => format!("implement it in the module of `{root_iface}` or of `{root_ty}`: `impl {root_iface} for {root_ty} {{ ... }}`"),
+            _ => format!("`{root_ty}` cannot implement `{root_iface}` outside core; wrap it in a struct you define (ADR 0016)"),
+        });
+        let steps = first
+            .iter()
+            .map(|o| tarn_diagnostics::Obligation { ty: self.show(&o.ty), interface: iname(self, o.interface), bound: o.bound })
+            .collect();
+        self.err(d.obligations(steps));
+        true
     }
 
     pub fn is_copy(&self, t: &Ty) -> bool {
@@ -314,7 +459,7 @@ impl<'e, 'a> FnCx<'e, 'a> {
                 else if Some(iface) == self.env.decls.share { Some(crate::Capability::Share) } else { None };
             let witnessed = matches!(z, Ty::Fn(..)) && cap.zip(evidence.as_ref()).is_some_and(|(cap, fields)|
                 fields.iter().all(|t| self.env.decls.capability(&self.infer.zonk(t), cap)));
-            if !witnessed && !self.implements(&z, iface) && !matches!(z, Ty::Var(_)) {
+            if !witnessed && !self.implements(&z, iface) && !matches!(z, Ty::Var(_)) && !self.report_unmet(span, "a bound", &z, iface) {
                 let (tn, iname) = (self.show(&z), self.env.r.symbol(iface).name.clone());
                 let help = if Some(iface) == self.env.decls.transfer || Some(iface) == self.env.decls.share {
                     format!("`{tn}` must satisfy `{iname}` structurally; generic parameters require an explicit bound")
@@ -882,6 +1027,14 @@ impl<'e, 'a> FnCx<'e, 'a> {
                 self.string_literals.insert(e.id);
                 Ty::Str
             }
+            ExprKind::Interpolated(parts) => {
+                for part in parts {
+                    if let InterpPart::Value(v) = part {
+                        self.interpolated_value(v);
+                    }
+                }
+                Ty::Str
+            }
             ExprKind::Bool(_) => Ty::Bool,
             ExprKind::Unit => Ty::Void,
             ExprKind::Error => Ty::Error,
@@ -1352,6 +1505,13 @@ impl<'e, 'a> FnCx<'e, 'a> {
                     && let Some(method) = self.env.r.member(eq, "eq")
                 {
                     self.tables.eq_ops.insert(e.id, method);
+                    return Ty::Bool;
+                }
+                if !ok
+                    && matches!(op, Eq | Ne)
+                    && let Some(eq) = self.env.decls.eq
+                    && self.report_unmet(e.span, "`==`", &inner, eq)
+                {
                     return Ty::Bool;
                 }
                 if !ok {

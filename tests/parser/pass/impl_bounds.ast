@@ -1,0 +1,3 @@
+(impl Eq for Pair<A, B> where #0: Eq)
+(impl Display for Wrap<T> where #0: Display + Eq)
+(impl Eq for Point)

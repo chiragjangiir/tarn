@@ -1,0 +1,14 @@
+// ADR 0078: a primitive root cause suggests a wrapper, never a forbidden impl.
+struct Pair<A, B> {
+    first A
+    second B
+}
+impl Eq for Pair<A: Eq, B: Eq> {
+    fn eq(&self, other &Self) bool {
+        return self.first.eq(&other.first) && self.second.eq(&other.second)
+    }
+}
+fn main() {
+    p := Pair{first: 1.5, second: 2}
+    if p == p { }
+}

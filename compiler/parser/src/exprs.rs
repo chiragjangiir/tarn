@@ -127,7 +127,7 @@ impl Parser {
     fn parse_binary(&mut self, min: u8) -> Expr {
         let start = self.span();
         let mut lhs = self.parse_unary();
-        let mut last_cmp: Option<Span> = None;
+        let mut last_cmp: Option<(Span, BinaryOp)> = None;
         loop {
             let Some((op, prec)) = binary_op(self.peek()) else { break };
             if prec < min {
@@ -151,15 +151,22 @@ impl Parser {
                 return self.error_expr(self.since(start));
             }
             if prec == CMP {
-                if let Some(prev) = last_cmp {
-                    self.error(
-                        Diagnostic::error("E1006", "chained_comparison", "comparison operators cannot be chained")
-                            .primary(op_tok.span, "second comparison")
-                            .secondary(prev, "first comparison")
-                            .help("split it: `a < b && b < c`"),
-                    );
+                if let Some((prev, prev_op)) = last_cmp {
+                    // `Vec<i32>.new()`: an attempt at explicit type arguments.
+                    let type_args = matches!(prev_op, BinaryOp::Lt)
+                        && matches!(op, BinaryOp::Gt)
+                        && matches!(self.peek(), TokenKind::Dot | TokenKind::LParen);
+                    let d = Diagnostic::error("E1006", "chained_comparison", "comparison operators cannot be chained")
+                        .primary(op_tok.span, "second comparison")
+                        .secondary(prev, "first comparison");
+                    self.error(if type_args {
+                        d.note("explicit type arguments in expressions are not supported in v0")
+                            .help("annotate the binding and let inference pick them: `var v: Vec<i32> = Vec.new()`")
+                    } else {
+                        d.help("split it: `a < b && b < c`")
+                    });
                 }
-                last_cmp = Some(op_tok.span);
+                last_cmp = Some((op_tok.span, op));
             }
             // An operator at the end of a line continues the expression.
             self.skip_newlines();
@@ -358,6 +365,17 @@ impl Parser {
                 self.bump();
                 ExprKind::Str(s)
             }
+            TokenKind::FStr(pieces) => {
+                let token = self.bump().span;
+                let parts = pieces
+                    .into_iter()
+                    .map(|piece| match piece {
+                        tarn_lexer::FPiece::Text(text) => InterpPart::Text(text),
+                        tarn_lexer::FPiece::Hole(path) => InterpPart::Value(self.hole_expr(token, path)),
+                    })
+                    .collect();
+                ExprKind::Interpolated(parts)
+            }
             TokenKind::True => {
                 self.bump();
                 ExprKind::Bool(true)
@@ -387,6 +405,18 @@ impl Parser {
             }
             TokenKind::LBracket => {
                 // `[N]T{a, b}` / `[]T{a, b}`
+                if let Some(close) = self.untyped_list_literal() {
+                    let span = Span::new(start.file, start.start, self.tokens[close].span.end);
+                    self.error(
+                        Diagnostic::error("E1001", "unexpected_token", "array literals must name their type")
+                            .primary(span, "this list has no element type")
+                            .help("write the length and element type before the elements: `[2]i32{1, 2}`"),
+                    );
+                    while self.pos <= close {
+                        self.bump();
+                    }
+                    return self.error_expr(span);
+                }
                 let ty = self.parse_type();
                 if !self.at(&TokenKind::LBrace) {
                     self.expect(&TokenKind::LBrace);
@@ -402,7 +432,9 @@ impl Parser {
                 let span = self.span();
                 let mut d = Diagnostic::error("E1002", "expected_expression", format!("expected expression, found {found}"))
                     .primary(span, "expected an expression");
-                if binary_op(&k).is_some() && self.tokens[self.pos.saturating_sub(1)].kind == TokenKind::Newline {
+                if k == TokenKind::Mut && matches!(self.tokens[self.pos + 1].kind, TokenKind::Ident(_)) {
+                    d = d.help("Tarn has no `mut` bindings: write `var x = value` for a mutable binding");
+                } else if binary_op(&k).is_some() && self.tokens[self.pos.saturating_sub(1)].kind == TokenKind::Newline {
                     d = d.help("a line cannot start with a binary operator; put the operator at the end of the previous line");
                 }
                 self.error(d);
@@ -410,6 +442,45 @@ impl Parser {
             }
         };
         Expr { id: self.id(), span: self.since(start), kind }
+    }
+
+    /// `{a.b.c}` of an interpolated string as `Field(Field(Ident a, b), c)`.
+    fn hole_expr(&mut self, token: Span, path: Vec<(String, u32)>) -> Expr {
+        let mut names = path.into_iter().map(|(name, offset)| {
+            let start = token.start + offset;
+            let span = Span::new(token.file, start, start + name.len() as u32);
+            (name, span)
+        });
+        let (first, first_span) = names.next().expect("lexer emits non-empty holes");
+        let mut e = Expr { id: self.id(), span: first_span, kind: ExprKind::Ident(first) };
+        for (name, span) in names {
+            let whole = e.span.to(span);
+            e = Expr { id: self.id(), span: whole, kind: ExprKind::Field { base: Box::new(e), name: Ident { name, span } } };
+        }
+        e
+    }
+
+    /// At `[`: the index of the matching `]` when the brackets hold a
+    /// comma-separated list (`[a, b]`), which is never a valid type.
+    fn untyped_list_literal(&self) -> Option<usize> {
+        let mut depth = 0usize;
+        let mut comma = false;
+        for (i, t) in self.tokens.iter().enumerate().skip(self.pos) {
+            match t.kind {
+                TokenKind::LParen | TokenKind::LBracket | TokenKind::LBrace => depth += 1,
+                TokenKind::RParen | TokenKind::RBrace => depth = depth.checked_sub(1)?,
+                TokenKind::RBracket => {
+                    depth = depth.checked_sub(1)?;
+                    if depth == 0 {
+                        return comma.then_some(i);
+                    }
+                }
+                TokenKind::Comma if depth == 1 => comma = true,
+                TokenKind::Eof => return None,
+                _ => {}
+            }
+        }
+        None
     }
 
     /// `fn(a, b i32) R { ... }`

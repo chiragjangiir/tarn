@@ -7,7 +7,7 @@
 
 mod token;
 
-pub use token::{Token, TokenKind, keyword};
+pub use token::{FPiece, Token, TokenKind, keyword};
 
 use tarn_diagnostics::{Diagnostic, FileId, SourceFile, Span};
 
@@ -129,6 +129,10 @@ impl<'a> Lexer<'a> {
             self.pos += 1;
         }
         let text = self.text(start);
+        if text == "f" && self.peek() == b'"' {
+            self.fstring(start);
+            return;
+        }
         let kind = keyword(text).unwrap_or_else(|| TokenKind::Ident(text.to_string()));
         self.push(kind, start);
     }
@@ -257,6 +261,120 @@ impl<'a> Lexer<'a> {
             }
         }
         self.push(TokenKind::Str(value), start);
+    }
+
+    /// `f"text {name.field} {{literal}}"`; `start` is at the `f`.
+    fn fstring(&mut self, start: usize) {
+        self.pos += 1;
+        let mut pieces = Vec::new();
+        let mut text = String::new();
+        loop {
+            let c = self.peek();
+            if self.pos >= self.src.len() || c == b'\n' {
+                let span = self.span(start);
+                self.error(
+                    Diagnostic::error("E0002", "unterminated_string", "unterminated string literal")
+                        .primary(span, "string starts here")
+                        .help("close it with `\"`; strings cannot span lines"),
+                );
+                break;
+            }
+            match c {
+                b'"' => {
+                    self.pos += 1;
+                    break;
+                }
+                b'\\' => self.escape(&mut text),
+                b'{' if self.peek_at(1) == b'{' => {
+                    text.push('{');
+                    self.pos += 2;
+                }
+                b'}' if self.peek_at(1) == b'}' => {
+                    text.push('}');
+                    self.pos += 2;
+                }
+                b'{' => {
+                    if !text.is_empty() {
+                        pieces.push(FPiece::Text(std::mem::take(&mut text)));
+                    }
+                    if let Some(path) = self.hole(start) {
+                        pieces.push(FPiece::Hole(path));
+                    }
+                }
+                b'}' => {
+                    let at = self.pos;
+                    self.pos += 1;
+                    self.error(
+                        Diagnostic::error("E0006", "invalid_interpolation", "unmatched `}` in an interpolated string")
+                            .primary(self.span(at), "")
+                            .help("write `}}` for a literal brace"),
+                    );
+                }
+                _ => {
+                    let ch = self.file.text[self.pos..].chars().next().unwrap();
+                    text.push(ch);
+                    self.pos += ch.len_utf8();
+                }
+            }
+        }
+        if !text.is_empty() {
+            pieces.push(FPiece::Text(text));
+        }
+        self.push(TokenKind::FStr(pieces), start);
+    }
+
+    /// `{a.b}` inside `f"..."`, at the `{`: dotted names up to `}`.
+    fn hole(&mut self, token_start: usize) -> Option<Vec<(String, u32)>> {
+        let open = self.pos;
+        self.pos += 1;
+        let mut path = Vec::new();
+        loop {
+            let name_start = self.pos;
+            if matches!(self.peek(), b'a'..=b'z' | b'A'..=b'Z' | b'_') {
+                while matches!(self.peek(), b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'_') {
+                    self.pos += 1;
+                }
+                path.push((self.text(name_start).to_string(), (name_start - token_start) as u32));
+                match self.peek() {
+                    b'.' => {
+                        self.pos += 1;
+                        continue;
+                    }
+                    b'}' => {
+                        self.pos += 1;
+                        return Some(path);
+                    }
+                    _ => {}
+                }
+            }
+            // Skip the rest of the hole, balancing nested braces, staying on
+            // this line and inside the literal.
+            let mut depth = 0usize;
+            while self.pos < self.src.len() && !matches!(self.peek(), b'"' | b'\n') {
+                match self.peek() {
+                    b'{' => depth += 1,
+                    b'}' if depth == 0 => break,
+                    b'}' => depth -= 1,
+                    _ => {}
+                }
+                self.pos += 1;
+            }
+            let closed = self.peek() == b'}';
+            if closed {
+                self.pos += 1;
+            }
+            let span = self.span(open);
+            let mut d = Diagnostic::error("E0006", "invalid_interpolation", "expected a name or field path inside `{...}`")
+                .primary(span, "")
+                .note("an interpolated string accepts only `{name}` and `{name.field}`");
+            d = if closed {
+                d.help("compute other values into a binding first; write `{{` for a literal brace")
+            } else {
+                d.help("close the interpolation with `}`, or write `{{` for a literal brace")
+            };
+            self.error(d);
+            return None;
+        }
     }
 
     fn escape(&mut self, value: &mut String) {

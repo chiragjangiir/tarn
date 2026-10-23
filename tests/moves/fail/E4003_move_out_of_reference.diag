@@ -5,5 +5,5 @@ error[E4003]: cannot move a value out from behind a reference
    |            ^^^^^^ this moves a non-copy value out of a borrowed place
    |
    = note: a reference only lends the value; the owner keeps it
-   = help: borrow it instead (`&...`), or work with a copy if the type allows it
+   = help: borrow it instead (`&...`, or return `&T`), or make an owned copy with a method such as `.clone()` when the type provides one
 

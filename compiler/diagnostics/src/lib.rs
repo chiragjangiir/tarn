@@ -45,6 +45,18 @@ pub struct Diagnostic {
     pub labels: Vec<Label>,
     pub notes: Vec<String>,
     pub help: Option<String>,
+    /// Failed implementation proof, outermost requirement first (ADR 0078).
+    /// Machine-readable twin of the chain note; empty for other diagnostics.
+    pub obligations: Vec<Obligation>,
+}
+
+/// One step of a failed implementation proof: `ty` must implement
+/// `interface`, required by the impl bound at `bound` (none for the root).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Obligation {
+    pub ty: String,
+    pub interface: String,
+    pub bound: Option<Span>,
 }
 
 impl Diagnostic {
@@ -57,6 +69,7 @@ impl Diagnostic {
             labels: Vec::new(),
             notes: Vec::new(),
             help: None,
+            obligations: Vec::new(),
         }
     }
 
@@ -77,6 +90,11 @@ impl Diagnostic {
 
     pub fn help(mut self, help: impl Into<String>) -> Diagnostic {
         self.help = Some(help.into());
+        self
+    }
+
+    pub fn obligations(mut self, steps: Vec<Obligation>) -> Diagnostic {
+        self.obligations = steps;
         self
     }
 

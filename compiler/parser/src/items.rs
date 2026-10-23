@@ -341,7 +341,17 @@ impl Parser {
     fn parse_interface(&mut self) -> ItemKind {
         self.bump();
         let name = self.expect_ident("interface name");
+        let generics_start = self.span();
         let generics = self.parse_generic_params();
+        if !generics.is_empty() {
+            let span = self.since(generics_start);
+            self.error(
+                Diagnostic::error("E1021", "generic_interface", "interfaces cannot have type parameters")
+                    .primary(span, "remove these type parameters")
+                    .note("generic interfaces are not supported in v0")
+                    .help("make the methods generic, or declare one interface per concrete type"),
+            );
+        }
         let mut methods = Vec::new();
         self.parse_body("method", |p| {
             if p.at(&TokenKind::Fn) {
@@ -364,7 +374,7 @@ impl Parser {
         self.bump();
         let interface = self.parse_path(true);
         self.expect(&TokenKind::For);
-        let target = self.parse_type();
+        let (target, binder_bounds) = self.parse_impl_target();
         let mut methods = Vec::new();
         self.parse_body("method", |p| {
             if p.at(&TokenKind::Fn) {
@@ -373,7 +383,46 @@ impl Parser {
                 p.expected_member("method `fn name(...) { ... }`");
             }
         });
-        ItemKind::Impl(ImplDecl { interface, target, methods })
+        ItemKind::Impl(ImplDecl { interface, target, binder_bounds, methods })
+    }
+
+    /// `Pair<A: Eq, B>`: a path type whose arguments may carry bounds
+    /// (ADR 0078). Other targets parse as ordinary types; resolution rejects them.
+    fn parse_impl_target(&mut self) -> (Type, Vec<Vec<Path>>) {
+        if !matches!(self.peek(), TokenKind::Ident(_)) {
+            return (self.parse_type(), Vec::new());
+        }
+        let start = self.span();
+        let mut segments = vec![self.expect_ident("type name")];
+        while self.at(&TokenKind::Dot) && matches!(self.nth(1), TokenKind::Ident(_)) {
+            self.bump();
+            segments.push(self.expect_ident("name"));
+        }
+        let mut args = Vec::new();
+        let mut binder_bounds = Vec::new();
+        if self.at(&TokenKind::Lt) {
+            self.bump();
+            self.with_mode(true, |p| {
+                while !p.at(&TokenKind::Gt) && !p.at(&TokenKind::Shr) && !p.at(&TokenKind::Eof) {
+                    args.push(p.parse_type());
+                    let mut bounds = Vec::new();
+                    if p.eat(&TokenKind::Colon) {
+                        bounds.push(p.parse_path(true));
+                        while p.eat(&TokenKind::Plus) {
+                            bounds.push(p.parse_path(true));
+                        }
+                    }
+                    binder_bounds.push(bounds);
+                    if !p.eat(&TokenKind::Comma) {
+                        break;
+                    }
+                }
+                p.expect_gt();
+            });
+        }
+        let span = self.since(start);
+        let path = Path { id: self.id(), span, segments, args };
+        (Type { id: self.id(), span, kind: TypeKind::Path(path) }, binder_bounds)
     }
 
     fn expected_member(&mut self, what: &str) {

@@ -56,8 +56,8 @@ is used for ordinary parse failure. These APIs use Option, not io.Error.
 
 The module uses functions rather than adding primitive methods outside core.
 See [ADR 0042](adr/0042-string-essentials.md) for ownership, native bridges,
-allocation tradeoffs and bootstrap limits. `string.Builder` (Phase 17) accumulates text
-efficiently. Offset cursors and borrowed byte views are available (Phase 32); general borrowed string values, Unicode classification and float formatting remain deferred.
+allocation tradeoffs and bootstrap limits. `Builder` (Phase 17; in `core` since
+ADR 0077) accumulates text efficiently, and `f"..."` interpolation builds on it. Offset cursors and borrowed byte views are available (Phase 32); general borrowed string values, Unicode classification and float formatting remain deferred.
 
 `string.fields(&text)` (Phase 31) returns owned nonempty fields separated by
 ASCII whitespace. Unicode whitespace classification remains separate work.
@@ -104,7 +104,7 @@ uses it for the original 2,000-character message bound.
 
 `rfind` returns the last byte offset (empty pattern: end). `parse_f64` accepts
 finite decimal text with optional sign, dot and exponent, without whitespace,
-hex or NaN/infinity. `from_f64` and `Builder.push_f64` use 17 significant digits
+hex or NaN/infinity. `from_f64` and `push_f64(&mut builder, value)` use 17 significant digits
 for round trips, rather than shortest display; parsing validates first in Tarn
 and uses a locale-independent native conversion. Overflow is None.
 
@@ -112,4 +112,5 @@ ASCII casing helpers preserve other UTF-8 bytes. `replace_all` replaces
 nonoverlapping matches; an empty pattern inserts at Unicode scalar boundaries.
 `format` takes a string slice: `{}` consumes one argument and `{{`/`}}` escape
 braces. Errors include kind and byte offset; there are no implicit conversions.
-Use typed Builder methods for mixed values without temporary strings.
+Prefer `f"..."` (ADR 0077) for fixed templates; use typed Builder methods for
+mixed values in loops without temporary strings.

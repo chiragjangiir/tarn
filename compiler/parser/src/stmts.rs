@@ -68,7 +68,10 @@ impl Parser {
                         format!("expected end of statement, found {found}"),
                     )
                     .primary(span, "expected a line break here");
-                    if matches!(self.peek(), TokenKind::ColonEq) {
+                    let after_let = matches!(&self.tokens[self.pos.saturating_sub(1)].kind, TokenKind::Ident(w) if w == "let");
+                    if after_let && matches!(self.peek(), TokenKind::Ident(_)) {
+                        d = d.help("Tarn has no `let`: write `x := value`, `x: T := value`, or `var x = value` for a mutable binding");
+                    } else if matches!(self.peek(), TokenKind::ColonEq) {
                         d = d.help("`:=` declares a new name and needs a plain identifier on its left");
                     } else {
                         d = d.help("put each statement on its own line");

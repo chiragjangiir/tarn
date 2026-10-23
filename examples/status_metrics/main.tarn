@@ -4,7 +4,6 @@ import "io"
 import "time"
 import "runtime"
 import "console"
-import "string"
 import "json"
 fn main() Result<void, io.Error> {
     before := metrics.parse_network(&try fs.read_text("/proc/net/dev"))
@@ -16,7 +15,7 @@ fn main() Result<void, io.Error> {
     elapsed := try start.elapsed()
     stamp := try time.now_utc()
     rates := metrics.rates(&before, &after, elapsed.as_millis())
-    var body = string.Builder.new()
+    var body = Builder.new()
     body.push("{\"unix_seconds\":")
     body.push_i64(stamp.unix_seconds)
     body.push(",\"elapsed_millis\":")

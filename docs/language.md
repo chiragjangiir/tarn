@@ -30,6 +30,12 @@ express the same thing, one of them is removed.
   of the `.` (`1.` and `.5` are errors) so `0..10` is never ambiguous.
 - String literals: `"text"` with escapes `\n \t \r \\ \" \0 \u{1F600}`.
   Strings may not contain raw newlines in draft 0.
+- Interpolated strings: `f"n={n} user={user.name}"` (ADR 0077). Holes hold
+  only a name or a field path; `{{` and `}}` are literal braces. Each value
+  is borrowed (never moved) and must implement `core.Display`: integers,
+  `bool`, `string` and user types with `impl Display for T { fn display(&self,
+  out &mut Builder) { ... } }`. `f64` is not `Display` yet; use
+  `string.from_f64`. The result is a new owned `string`.
 
 Keywords:
 
@@ -48,6 +54,9 @@ one position (receiver, dynamic interface type, structured-concurrency block).
 
 A file is a module. A directory of files is a package-less module tree; the
 module path is the file path relative to the project root, without extension.
+The project root is the directory of the entry file (with a manifest, its
+`entry`), so `import "core/session"` from `examples/app/main.tarn` reads
+`examples/app/core/session.tarn`. Paths cannot leave that directory (`..`).
 There is no `package` line: the file system already says it (one less thing to
 keep in sync). See ADR 0004.
 
@@ -341,6 +350,16 @@ impl Writer for File {
 fn save<W: Writer>(w &mut W) { ... }     // static dispatch (monomorphized or shared)
 fn save_any(w &mut any Writer) { ... }    // dynamic dispatch, explicit with `any`
 ```
+
+Interfaces take no type parameters in v0 (`interface Getter<T>` is E1021);
+methods may still be generic.
+
+An implementation for a generic type may require bounds of its arguments
+(ADR 0078): `impl Eq for Pair<A: Eq, B: Eq>` makes `Pair<X, Y>` implement
+`Eq` exactly when `X` and `Y` do. `core` uses this for `Option<T: Eq>`,
+`Result<T: Eq, E: Eq>` and `Hash for Option<T: Hash>`. Coherence is
+unchanged: still one impl per (interface, type). A failing use reports
+E3077 with the innermost cause and the chain that required it.
 
 `Self` in an interface is the implementing type (in an impl, its target).
 A method using `Self` beyond its receiver cannot be called through `any I`

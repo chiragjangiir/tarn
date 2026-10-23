@@ -62,6 +62,7 @@ stream them:
 | E0003 | `invalid_escape` | invalid escape sequence |
 | E0004 | `invalid_number` | invalid numeric literal |
 | E0005 | `number_out_of_range` | integer literal is too large |
+| E0006 | `invalid_interpolation` | `f"..."` holes accept only `{name}` / `{name.field}`; unmatched `}` (ADR 0077) |
 | E1001 | `unexpected_token` | expected X, found Y |
 | E1002 | `expected_expression` | expected expression, found X |
 | E1003 | `expected_type` | expected type, found X |
@@ -82,6 +83,7 @@ stream them:
 | E1018 | `missing_type_colon` | a type annotation on a binding needs `:` |
 | E1019 | `uninit_var_needs_type` | `var x` without a value needs a type |
 | E1020 | `nesting_too_deep` | expressions, blocks, types or patterns nested more than 128 levels |
+| E1021 | `generic_interface` | interfaces cannot have type parameters |
 | E2001 | `undefined_name` | cannot find `x` in this scope |
 | E2002 | `duplicate_definition` | `x` is defined more than once |
 | E2003 | `duplicate_in_scope` | `x` is already declared in this scope |
@@ -188,6 +190,8 @@ Golden tests in `tests/**/fail/*.tarn` pin the rendered text of each code.
 | Code | Name | Meaning |
 |------|------|---------|
 | E3051 | `unmodeled_replacement_loans` | a native guard replacement cannot accept new payload loans without a stored-loan effect contract |
+| E3076 | `not_displayable` | an interpolated value's type does not implement `Display` (ADR 0077) |
+| E3077 | `impl_bound_not_satisfied` | a bounded impl applies only when its type arguments satisfy its bounds; reports the root cause and chain (ADR 0078) |
 | E3073 | `self_through_dynamic_interface` | a method using `Self` beyond its receiver cannot be called through `any I`; use `<T: I>` |
 | E3074 | `expanding_instantiation` | recursive generic calls grow a type argument without bound, so specialization would never finish |
 | E3075 | `value_too_large` | a concrete value exceeds the v0 native limits (64 KiB, 4096 array elements, 64 nesting levels) |

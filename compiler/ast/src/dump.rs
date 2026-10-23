@@ -82,6 +82,16 @@ impl Dumper {
                 self.path(&i.interface);
                 self.s(" for ");
                 self.ty(&i.target);
+                for (index, bounds) in i.binder_bounds.iter().enumerate() {
+                    for (j, b) in bounds.iter().enumerate() {
+                        if j == 0 {
+                            let _ = write!(self.out, " where #{index}: ");
+                        } else {
+                            self.s(" + ");
+                        }
+                        self.path(b);
+                    }
+                }
                 for m in &i.methods {
                     self.nl(ind + 1);
                     self.func(m, "", ind + 1);
@@ -365,6 +375,19 @@ impl Dumper {
             ExprKind::Float(s) => self.s(s),
             ExprKind::Str(s) => {
                 let _ = write!(self.out, "{s:?}");
+            }
+            ExprKind::Interpolated(parts) => {
+                self.s("(interp");
+                for part in parts {
+                    self.s(" ");
+                    match part {
+                        InterpPart::Text(t) => {
+                            let _ = write!(self.out, "{t:?}");
+                        }
+                        InterpPart::Value(v) => self.expr(v, ind),
+                    }
+                }
+                self.s(")");
             }
             ExprKind::Bool(b) => {
                 let _ = write!(self.out, "{b}");

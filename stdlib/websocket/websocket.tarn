@@ -255,7 +255,7 @@ pub fn connect(url &string, options &Options) Result<Client, Error> {
     var nonce = [16]u8{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}
     try _random(&mut nonce)
     key := _base64(&nonce)
-    var request = string.Builder.new()
+    var request = Builder.new()
     request.push("GET ")
     request.push(&target.path)
     request.push(" HTTP/1.1\r\nHost: ")

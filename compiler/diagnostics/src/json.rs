@@ -71,6 +71,25 @@ pub fn to_json(d: &Diagnostic, sources: &SourceMap) -> String {
         out.push(',');
         field_str(&mut out, "help", h);
     }
+    if !d.obligations.is_empty() {
+        out.push_str(",\"obligations\":[");
+        for (i, o) in d.obligations.iter().enumerate() {
+            if i > 0 {
+                out.push(',');
+            }
+            out.push('{');
+            field_str(&mut out, "type", &o.ty);
+            out.push(',');
+            field_str(&mut out, "interface", &o.interface);
+            if let Some(span) = o.bound {
+                out.push_str(",\"bound\":{");
+                position(&mut out, sources, span);
+                out.push('}');
+            }
+            out.push('}');
+        }
+        out.push(']');
+    }
     out.push('}');
     out
 }

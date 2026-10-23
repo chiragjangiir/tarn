@@ -1,0 +1,8 @@
+error[E1002]: expected expression, found `mut`
+ --> tests/parser/fail/E1002_mut_binding.tarn:2:5
+  |
+2 |     mut x := 1
+  |     ^^^ expected an expression
+  |
+  = help: Tarn has no `mut` bindings: write `var x = value` for a mutable binding
+

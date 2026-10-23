@@ -132,12 +132,18 @@ pub struct Decls {
     pub transfer: Option<SymbolId>,
     /// `core.Eq`, behind `==`/`!=` for structs, enums and type parameters.
     pub eq: Option<SymbolId>,
+    /// `core.Display` and `core.Builder`, behind `f"..."` (ADR 0077).
+    pub display: Option<SymbolId>,
+    pub builder: Option<SymbolId>,
     pub share: Option<SymbolId>,
     pub native_capabilities: HashMap<SymbolId, crate::NativeCapabilities>,
     /// Interface declaration order, plus resolved implementation IDs.
     pub interfaces: HashMap<SymbolId, Vec<SymbolId>>,
     pub interface_methods: HashMap<SymbolId, (SymbolId, usize)>,
     pub implementations: HashMap<(SymbolId, SymbolId), Vec<SymbolId>>,
+    /// `(interface, target)` → bounds the impl requires of the target's type
+    /// arguments: (argument index, required interface, bound span) (ADR 0078).
+    pub impl_conditions: HashMap<(SymbolId, SymbolId), Vec<(usize, SymbolId, tarn_diagnostics::Span)>>,
     /// Primitive types that have `impl`s in `core` and the symbol naming them.
     pub primitive_targets: Vec<(Ty, SymbolId)>,
     pub structs: HashMap<SymbolId, StructDef>,
@@ -191,6 +197,8 @@ impl<'a> Env<'a> {
         decls.result = ps.get("Result");
         decls.mutex = ps.get("Mutex");
         decls.vec = ps.get("Vec");
+        decls.display = ps.get("Display");
+        decls.builder = ps.get("Builder");
         decls.mutex_guard = ps.get("MutexGuard");
         for (name, ty) in [("AtomicBool", "bool"), ("AtomicI32", "i32"), ("AtomicI64", "i64"), ("AtomicU32", "u32"), ("AtomicU64", "u64"), ("AtomicUsize", "usize")] {
             if let Some(id) = ps.get(name) { decls.atomics.insert(id, primitive(ty)); }
@@ -380,6 +388,27 @@ impl<'a> Env<'a> {
                         };
                         if let Some(t) = target {
                             self.inherit_bounds(t, &binders);
+                        }
+                        // ADR 0078: binder bounds hold inside the impl and are
+                        // conditions on every use of it.
+                        let uses = &self.r.tables[mi].uses;
+                        let interface = match uses.get(&i.interface.id).map(|u| &u.res) {
+                            Some(Res::Symbol(s)) => Some(*s),
+                            _ => None,
+                        };
+                        let mut conditions = Vec::new();
+                        for (index, (b, bounds)) in binders.iter().zip(&i.binder_bounds).enumerate() {
+                            for bound in bounds {
+                                if let Some(Res::Symbol(required)) = uses.get(&bound.id).map(|u| &u.res) {
+                                    self.decls.bounds.entry(*b).or_default().push(*required);
+                                    conditions.push((index, *required, bound.span));
+                                }
+                            }
+                        }
+                        if let (Some(interface), Some(t)) = (interface, target)
+                            && !conditions.is_empty()
+                        {
+                            self.decls.impl_conditions.insert((interface, t), conditions);
                         }
                         let self_ty = target.map(|t| {
                             if matches!(self.r.symbol(t).kind, SymbolKind::Primitive) { primitive(&self.r.symbol(t).name) } else { Ty::Adt(t, binders.iter().map(|b| Ty::Param(*b)).collect()) }

@@ -1,0 +1,44 @@
+error[E0006]: expected a name or field path inside `{...}`
+ --> tests/lexer/fail/interpolation.tarn:3:13
+  |
+3 |     print(f"{a + 1}")
+  |             ^^^^^^^
+  |
+  = note: an interpolated string accepts only `{name}` and `{name.field}`
+  = help: compute other values into a binding first; write `{{` for a literal brace
+
+error[E0006]: expected a name or field path inside `{...}`
+ --> tests/lexer/fail/interpolation.tarn:4:13
+  |
+4 |     print(f"{}")
+  |             ^^
+  |
+  = note: an interpolated string accepts only `{name}` and `{name.field}`
+  = help: compute other values into a binding first; write `{{` for a literal brace
+
+error[E0006]: unmatched `}` in an interpolated string
+ --> tests/lexer/fail/interpolation.tarn:5:15
+  |
+5 |     print(f"a } b")
+  |               ^
+  |
+  = help: write `}}` for a literal brace
+
+error[E0006]: expected a name or field path inside `{...}`
+ --> tests/lexer/fail/interpolation.tarn:6:13
+  |
+6 |     print(f"{Point{x: 1}}")
+  |             ^^^^^^^^^^^^^
+  |
+  = note: an interpolated string accepts only `{name}` and `{name.field}`
+  = help: compute other values into a binding first; write `{{` for a literal brace
+
+error[E0006]: expected a name or field path inside `{...}`
+ --> tests/lexer/fail/interpolation.tarn:7:13
+  |
+7 |     print(f"{a")
+  |             ^^
+  |
+  = note: an interpolated string accepts only `{name}` and `{name.field}`
+  = help: close the interpolation with `}`, or write `{{` for a literal brace
+

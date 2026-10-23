@@ -67,6 +67,8 @@ pub struct Program {
     pub modules: Vec<(String, Module)>,
     /// Embedded source provenance retained for semantic contracts.
     pub trusted_modules: std::collections::HashSet<String>,
+    /// Directory each module's local imports resolve against (diagnostics).
+    pub import_roots: std::collections::HashMap<String, String>,
 }
 
 pub struct CheckResult {
@@ -185,6 +187,7 @@ fn load_editor_sources(entry: &Path, overlays: &std::collections::HashMap<PathBu
     let mut modules: Vec<(String, Module)> = Vec::new();
     let mut diags = Vec::new();
     let mut trusted_modules = std::collections::HashSet::new();
+    let mut import_roots = std::collections::HashMap::new();
     let mut queue = vec![(stem, entry.to_path_buf(), None::<String>, root.clone())];
     while let Some((name, path, owner, module_root)) = queue.pop() {
         if modules.iter().any(|(n, _)| *n == name) {
@@ -259,6 +262,8 @@ fn load_editor_sources(entry: &Path, overlays: &std::collections::HashMap<PathBu
                 }
             }
         }
+        let shown = module_root.strip_prefix(".").unwrap_or(&module_root).display().to_string();
+        import_roots.insert(name.clone(), if shown.is_empty() { ".".to_string() } else { shown });
         modules.push((name, res.module));
     }
     // `core` is always part of the program (ADR 0020). Embedded in the
@@ -273,7 +278,7 @@ fn load_editor_sources(entry: &Path, overlays: &std::collections::HashMap<PathBu
         modules.push(("core".to_string(), res.module));
         trusted_modules.insert("core".to_string());
     }
-    Ok((Program { import_targets, sources, disk_sources, modules, trusted_modules }, diags))
+    Ok((Program { import_targets, sources, disk_sources, modules, trusted_modules, import_roots }, diags))
 }
 
 /// Lex, parse and resolve. Resolution only runs on syntactically valid
@@ -316,7 +321,7 @@ fn check_loaded_with_bindings((program, mut diagnostics): (Program, Vec<Diagnost
     let mut drops = None;
     let errors = |ds: &[Diagnostic]| ds.iter().any(|d| d.severity == Severity::Error);
     if !errors(&diagnostics) {
-        let inputs: Vec<ModuleInput> = program.modules.iter().map(|(n, m)| ModuleInput { name: n.clone(), ast: m, trusted_stdlib: program.trusted_modules.contains(n) }).collect();
+        let inputs: Vec<ModuleInput> = program.modules.iter().map(|(n, m)| ModuleInput { name: n.clone(), ast: m, trusted_stdlib: program.trusted_modules.contains(n), import_root: program.import_roots.get(n).cloned() }).collect();
         let (mut r, d) = tarn_resolve::resolve_with_imports(&inputs, &program.import_targets);
         testing::bind_generated_prelude(&program, &mut r, generated_starts);
         diagnostics.extend(d);

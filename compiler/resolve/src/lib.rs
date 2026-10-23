@@ -41,6 +41,8 @@ pub struct ModuleInput<'a> {
     pub ast: &'a Module,
     /// Bundled source provenance, never inferred from a user module filename.
     pub trusted_stdlib: bool,
+    /// Directory its local imports resolve against, for diagnostics only.
+    pub import_root: Option<String>,
 }
 
 /// Trusted stdlib layers and the layers each one builds on (ADR 0041), lowest
@@ -328,7 +330,7 @@ mod tests {
         let mut map = SourceMap::new();
         let id = map.add("t.tarn", "struct S {\n}\n\nfn S.get(&self) {\n}\n");
         let parsed = tarn_parser::parse_file(id, map.file(id)).module;
-        let inputs = [crate::ModuleInput { name: "t".into(), ast: &parsed, trusted_stdlib: false }];
+        let inputs = [crate::ModuleInput { name: "t".into(), ast: &parsed, trusted_stdlib: false, import_root: None }];
         let (r, d) = crate::resolve(&inputs);
         assert!(d.is_empty());
         let tarn_ast::ItemKind::Fn(f) = &parsed.items[1].kind else { panic!() };
@@ -344,7 +346,7 @@ mod tests {
         let id = map.add("core.tarn", "interface Extra { fn hash(&self) u64 }\nimpl Extra for i32 { fn hash(&self) u64 { return 0 } }\n");
         let ast = tarn_parser::parse_file(id, map.file(id)).module;
         for trusted in [false, true] {
-            let inputs = [crate::ModuleInput { name: "core".into(), ast: &ast, trusted_stdlib: trusted }];
+            let inputs = [crate::ModuleInput { name: "core".into(), ast: &ast, trusted_stdlib: trusted, import_root: None }];
             let (_, diagnostics) = crate::resolve(&inputs);
             assert_eq!(diagnostics.iter().any(|d| d.code == "E2024"), !trusted, "{diagnostics:?}");
         }
@@ -356,7 +358,7 @@ mod tests {
         let mut map = SourceMap::new();
         let id = map.add("t.tarn", "");
         let ast = tarn_parser::parse_file(id, map.file(id)).module;
-        let module = |name: &str, trusted_stdlib| crate::ModuleInput { name: name.into(), ast: &ast, trusted_stdlib };
+        let module = |name: &str, trusted_stdlib| crate::ModuleInput { name: name.into(), ast: &ast, trusted_stdlib, import_root: None };
         let (io, time, net, runtime) = (module("io", true), module("time", true), module("net", true), module("runtime", true));
         assert!(crate::internal_visible(&time, &io) && crate::internal_visible(&net, &io) && crate::internal_visible(&runtime, &net));
         let fs = module("fs", true);

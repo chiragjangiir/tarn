@@ -63,7 +63,7 @@ fn main() Result<void, io.Error> {
     collections.sort(&mut rows, compare)
     var out = console.stdout()
     for row in rows.as_slice() {
-        var line = string.Builder.new()
+        var line = Builder.new()
         line.push_u64(row.count)
         line.push("\t")
         line.push(&row.text)

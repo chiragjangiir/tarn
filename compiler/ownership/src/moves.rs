@@ -479,7 +479,7 @@ impl Cx<'_> {
         self.diags.push(
             Diagnostic::error("E4003", "move_out_of_reference", "cannot move a value out from behind a reference")
                 .primary(span, "this moves a non-copy value out of a borrowed place")
-                .help("borrow it instead (`&...`), or work with a copy if the type allows it")
+                .help("borrow it instead (`&...`, or return `&T`), or make an owned copy with a method such as `.clone()` when the type provides one")
                 .note("a reference only lends the value; the owner keeps it"),
         );
     }

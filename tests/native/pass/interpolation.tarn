@@ -1,0 +1,43 @@
+// f"..." strings (ADR 0077): text, escaped braces, fields, user Display,
+// generic bounds, values reached through references, and no moves.
+struct User {
+    name string
+    age u32
+}
+struct Point {
+    x i32
+    y i32
+}
+impl Display for Point {
+    fn display(&self, out &mut Builder) {
+        out.push(&f"({self.x}, {self.y})")
+    }
+}
+fn label(u &User) string {
+    return f"{u.name} is {u.age}"
+}
+fn show<T: Display>(name &string, value &T) string {
+    return f"{name}={value}"
+}
+fn bump(n &mut i64) string {
+    *n = *n + 1
+    return f"now {n}"
+}
+fn main() {
+    n := 5
+    small: u8 := 255
+    negative: i64 := -9223372036854775807
+    ok := false
+    user := User{name: "Ana", age: 30}
+    print(f"n={n} small={small} negative={negative} ok={ok}")
+    print(f"{{braces}} and \"quotes\"")
+    print(label(&user))
+    print(f"still usable: {user.name}")
+    p := Point{x: -3, y: 4}
+    print(f"point {p}")
+    print(show(&"p", &p))
+    var counter: i64 = 1
+    print(bump(&mut counter))
+    print(f"")
+    print(f"ñ{user.name}😀")
+}

@@ -1,0 +1,16 @@
+error[E3076]: `Point` cannot be interpolated into a string
+ --> tests/types/fail/E3076_not_displayable.tarn:7:20
+  |
+7 |     print(f"point {p}")
+  |                    ^ this is `Point`, which does not implement `Display`
+  |
+  = help: implement it: `impl Display for Point { fn display(&self, out &mut Builder) { ... } }`
+
+error[E3076]: `{float}` cannot be interpolated into a string
+ --> tests/types/fail/E3076_not_displayable.tarn:9:20
+  |
+9 |     print(f"ratio {ratio}")
+  |                    ^^^^^ this is `{float}`, which does not implement `Display`
+  |
+  = help: convert it first: `text := string.from_f64(value)`, then interpolate `{text}`
+

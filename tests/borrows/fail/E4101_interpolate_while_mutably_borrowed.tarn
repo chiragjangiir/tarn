@@ -1,0 +1,6 @@
+fn main() {
+    var count: i32 = 1
+    r := &mut count
+    print(f"count {count}")
+    *r = 2
+}

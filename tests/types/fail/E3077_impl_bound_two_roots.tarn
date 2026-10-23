@@ -1,0 +1,20 @@
+// ADR 0078: every distinct root cause is reported in one diagnostic.
+struct Pair<A, B> {
+    first A
+    second B
+}
+impl Eq for Pair<A: Eq, B: Eq> {
+    fn eq(&self, other &Self) bool {
+        return self.first.eq(&other.first) && self.second.eq(&other.second)
+    }
+}
+struct Point {
+    x i32
+}
+struct Color {
+    c i32
+}
+fn main() {
+    both := Pair{first: Point{x: 1}, second: Color{c: 2}}
+    if both == both { }
+}

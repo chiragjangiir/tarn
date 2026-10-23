@@ -1,0 +1,8 @@
+fn main() {
+    a := 1
+    print(f"{a + 1}")
+    print(f"{}")
+    print(f"a } b")
+    print(f"{Point{x: 1}}")
+    print(f"{a")
+}

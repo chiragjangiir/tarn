@@ -12,10 +12,10 @@ pub interface Encode {
 /// is responsible for balanced begin/end calls and for one key per object
 /// value. An unbalanced document is a program bug, not detected here.
 pub struct Writer {
-    text string.Builder
+    text Builder
     comma bool
 }
-pub fn Writer.new() Writer { return Writer{text: string.Builder.new(), comma: false} }
+pub fn Writer.new() Writer { return Writer{text: Builder.new(), comma: false} }
 fn Writer.separate(&mut self) {
     if self.comma { self.text.push(",") }
     self.comma = true
@@ -552,6 +552,6 @@ impl Encode for Value {
 pub fn Writer.f64(&mut self, value f64) bool {
     if !string.is_finite(value) { return false }
     self.separate()
-    self.text.push_f64(value)
+    string.push_f64(&mut self.text, value)
     return true
 }

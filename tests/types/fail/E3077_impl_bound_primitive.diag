@@ -1,0 +1,11 @@
+error[E3077]: `{float}` does not implement `Eq`
+  --> tests/types/fail/E3077_impl_bound_primitive.tarn:13:8
+   |
+ 6 | impl Eq for Pair<A: Eq, B: Eq> {
+   |                     -- required by this bound
+13 |     if p == p { }
+   |        ^^^^^^ `==` on `Pair<{float}, {integer}>` requires `Eq`
+   |
+   = note: `Pair<{float}, {integer}>: Eq` needs `{float}: Eq`
+   = help: `{float}` cannot implement `Eq` outside core; wrap it in a struct you define (ADR 0016)
+

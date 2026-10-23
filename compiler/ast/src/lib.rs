@@ -165,6 +165,9 @@ pub struct InterfaceDecl {
 pub struct ImplDecl {
     pub interface: Path,
     pub target: Type,
+    /// Bounds on each target type argument, in order (`Pair<A: Eq, B>` →
+    /// `[[Eq], []]`); empty when the target has no arguments (ADR 0078).
+    pub binder_bounds: Vec<Vec<Path>>,
     pub methods: Vec<FnDecl>,
 }
 
@@ -340,11 +343,19 @@ pub struct Expr {
 }
 
 #[derive(Clone, Debug, PartialEq)]
+pub enum InterpPart {
+    Text(String),
+    Value(Expr),
+}
+
+#[derive(Clone, Debug, PartialEq)]
 pub enum ExprKind {
     Int(u64),
     /// Literal text without `_`.
     Float(String),
     Str(String),
+    /// `f"a{x}b"` (ADR 0077); each value is an `Ident` or `Field` chain.
+    Interpolated(Vec<InterpPart>),
     Bool(bool),
     /// `()`
     Unit,

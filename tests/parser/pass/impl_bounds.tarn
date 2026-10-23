@@ -1,0 +1,6 @@
+impl Eq for Pair<A: Eq, B> {
+}
+impl Display for Wrap<T: Display + Eq> {
+}
+impl Eq for Point {
+}

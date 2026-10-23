@@ -7,6 +7,9 @@
       "include": "#comments"
     },
     {
+      "include": "#interpolated-strings"
+    },
+    {
       "include": "#strings"
     },
     {
@@ -46,6 +49,44 @@
       "begin": "\"",
       "end": "\"|$",
       "patterns": [
+        {
+          "name": "constant.character.escape.tarn",
+          "match": "\\\\(?:[ntr0\\\\\"]|u\\{[0-9A-Fa-f]{1,6}\\})"
+        },
+        {
+          "name": "invalid.illegal.escape.tarn",
+          "match": "\\\\."
+        }
+      ]
+    },
+    "interpolated-strings": {
+      "name": "string.quoted.double.interpolated.tarn",
+      "begin": "\\bf\"",
+      "end": "\"|$",
+      "patterns": [
+        {
+          "name": "constant.character.escape.tarn",
+          "match": "\\{\\{|\\}\\}"
+        },
+        {
+          "name": "meta.interpolation.tarn",
+          "match": "(\\{)([A-Za-z_][A-Za-z0-9_]*(?:\\.[A-Za-z_][A-Za-z0-9_]*)*)(\\})",
+          "captures": {
+            "1": {
+              "name": "punctuation.section.interpolation.begin.tarn"
+            },
+            "2": {
+              "name": "variable.other.tarn"
+            },
+            "3": {
+              "name": "punctuation.section.interpolation.end.tarn"
+            }
+          }
+        },
+        {
+          "name": "invalid.illegal.interpolation.tarn",
+          "match": "\\{[^}\"]*\\}?|\\}"
+        },
         {
           "name": "constant.character.escape.tarn",
           "match": "\\\\(?:[ntr0\\\\\"]|u\\{[0-9A-Fa-f]{1,6}\\})"

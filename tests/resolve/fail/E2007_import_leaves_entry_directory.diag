@@ -1,0 +1,8 @@
+error[E2007]: cannot find module `../outside`
+ --> tests/resolve/fail/E2007_import_leaves_entry_directory.tarn:1:8
+  |
+1 | import "../outside"
+  |        ^^^^^^^^^^^^ no such module
+  |
+  = note: import paths name files below the entry file's directory; `.`, `..` and empty segments are not allowed
+

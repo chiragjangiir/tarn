@@ -56,6 +56,7 @@ impl<'a> Cx<'a> {
                     labels: Vec::new(),
                     notes: Vec::new(),
                     help: Some("remove the import".to_string()),
+                    obligations: Vec::new(),
                 }
                 .primary(s.span.unwrap(), "");
                 self.diags.push(d);
@@ -423,9 +424,13 @@ impl<'c, 'a> Walker<'c, 'a> {
         }
     }
 
-    /// Owner/impl binders: plain generic parameters, bounds already rejected.
+    /// Owner/impl binders. Owner bounds were rejected (E2021); impl binder
+    /// bounds are interfaces the impl requires of its arguments (ADR 0078).
     fn binders(&mut self, ps: &[GenericParam]) {
         for g in ps {
+            for b in &g.bounds {
+                self.interface_path(b, "a bound");
+            }
             // A binder named like an existing type is almost certainly an
             // attempted specialization (`Pair<i32, B>`), not a fresh name.
             if let Some(existing) = self.cx.r.lookup(self.scope, &g.name.name)
@@ -503,7 +508,7 @@ impl<'c, 'a> Walker<'c, 'a> {
         let saved = self.scope;
         self.push_scope(ScopeKind::Item, item.span);
         let iface = self.interface_path(&i.interface, "`impl`");
-        let target = self.impl_target(&i.target);
+        let target = self.impl_target(&i.target, &i.binder_bounds);
         // `Self` in an impl is its target type; the type checker substitutes
         // this implicit parameter with the target and its binders.
         let this = Symbol {
@@ -524,7 +529,7 @@ impl<'c, 'a> Walker<'c, 'a> {
 
     /// `impl I for T` / `impl I for T<A, B>`: `T` a struct or enum, its
     /// arguments fresh binders (ADR 0016).
-    fn impl_target(&mut self, t: &Type) -> Option<SymbolId> {
+    fn impl_target(&mut self, t: &Type, bounds: &[Vec<Path>]) -> Option<SymbolId> {
         let TypeKind::Path(p) = &t.kind else {
             self.cx.diags.push(
                 Diagnostic::error("E2024", "invalid_impl_target", "interfaces can only be implemented for structs and enums")
@@ -564,10 +569,11 @@ impl<'c, 'a> Walker<'c, 'a> {
             );
         }
         let mut binders = Vec::new();
-        for a in &p.args {
+        for (index, a) in p.args.iter().enumerate() {
             match &a.kind {
                 TypeKind::Path(ap) if ap.segments.len() == 1 && ap.args.is_empty() => {
-                    binders.push(GenericParam { id: a.id, name: ap.segments[0].clone(), bounds: Vec::new() });
+                    let bounds = bounds.get(index).cloned().unwrap_or_default();
+                    binders.push(GenericParam { id: a.id, name: ap.segments[0].clone(), bounds });
                 }
                 _ => self.cx.diags.push(
                     Diagnostic::error("E2022", "specialized_impl", "impl type arguments must be type parameter names")
@@ -850,6 +856,14 @@ impl<'c, 'a> Walker<'c, 'a> {
             }
             ExprKind::Paren(inner) => {
                 self.expr(inner);
+                None
+            }
+            ExprKind::Interpolated(parts) => {
+                for part in parts {
+                    if let InterpPart::Value(v) = part {
+                        self.expr(v);
+                    }
+                }
                 None
             }
             ExprKind::Call { callee, args } => {

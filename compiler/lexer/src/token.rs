@@ -19,6 +19,8 @@ pub enum TokenKind {
     Float(String),
     /// Cooked string value (escapes resolved).
     Str(String),
+    /// Interpolated literal `f"..."` (ADR 0077).
+    FStr(Vec<FPiece>),
 
     // Keywords.
     Fn,
@@ -133,6 +135,7 @@ impl TokenKind {
             Int(_) => "int",
             Float(_) => "float",
             Str(_) => "string",
+            FStr(_) => "fstring",
             Fn => "fn",
             Async => "async",
             Await => "await",
@@ -197,4 +200,14 @@ impl TokenKind {
             Eof => "eof",
         }
     }
+}
+
+/// One piece of an interpolated literal `f"..."` (ADR 0077).
+#[derive(Clone, Debug, PartialEq)]
+pub enum FPiece {
+    /// Cooked text: escapes, `{{` and `}}` resolved.
+    Text(String),
+    /// `{a.b.c}`: the dotted names, each with its byte offset from the start
+    /// of the token (kinds stay position-independent).
+    Hole(Vec<(String, u32)>),
 }

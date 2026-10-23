@@ -1,0 +1,9 @@
+error[E1021]: interfaces cannot have type parameters
+ --> tests/parser/fail/E1021_generic_interface.tarn:1:17
+  |
+1 | interface Getter<T> {
+  |                 ^^^ remove these type parameters
+  |
+  = note: generic interfaces are not supported in v0
+  = help: make the methods generic, or declare one interface per concrete type
+

@@ -1,0 +1,11 @@
+error[E3077]: `Point` does not implement `Eq`
+  --> tests/types/fail/E3077_impl_bound_chain.tarn:27:11
+   |
+ 6 | impl Eq for Pair<A: Eq, B: Eq> {
+   |                     -- required by this bound
+27 |     print(needs(&deep))
+   |           ^^^^^^^^^^^^ a bound on `Wrap<Wrap<Wrap<Pair<Point, i64>>>>` requires `Eq`
+   |
+   = note: `Wrap<Wrap<Wrap<Pair<Point, i64>>>>: Eq` needs ... 2 more ... needs `Pair<Point, i64>: Eq` needs `Point: Eq`
+   = help: implement it in the module of `Eq` or of `Point`: `impl Eq for Point { ... }`
+

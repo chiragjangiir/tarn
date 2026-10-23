@@ -1,0 +1,6 @@
+fn main() {
+    name := "Ana"
+    owner := name
+    print(f"hello {name}")
+    print(owner)
+}

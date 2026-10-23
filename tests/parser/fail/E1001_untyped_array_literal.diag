@@ -1,0 +1,8 @@
+error[E1001]: array literals must name their type
+ --> tests/parser/fail/E1001_untyped_array_literal.tarn:2:11
+  |
+2 |     xs := [1, 2]
+  |           ^^^^^^ this list has no element type
+  |
+  = help: write the length and element type before the elements: `[2]i32{1, 2}`
+

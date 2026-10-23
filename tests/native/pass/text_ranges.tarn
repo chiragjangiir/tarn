@@ -56,7 +56,7 @@ fn main() {
     check(prefix.start == 0 && prefix.end == 6)
     check(string.prefix_scalars("é", 0).end == 0)
     check(string.prefix_scalars("é", 99).end == 2)
-    var builder = string.Builder.new()
+    var builder = Builder.new()
     builder.push_u64(18446744073709551615)
     builder.push(" ")
     builder.push_i64(-9223372036854775808)

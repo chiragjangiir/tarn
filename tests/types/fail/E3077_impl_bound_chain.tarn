@@ -1,0 +1,28 @@
+// ADR 0078: a failure three levels deep names the root cause and elides the chain.
+struct Pair<A, B> {
+    first A
+    second B
+}
+impl Eq for Pair<A: Eq, B: Eq> {
+    fn eq(&self, other &Self) bool {
+        return self.first.eq(&other.first) && self.second.eq(&other.second)
+    }
+}
+struct Point {
+    x i32
+}
+struct Wrap<T> {
+    v T
+}
+impl Eq for Wrap<T: Eq> {
+    fn eq(&self, other &Self) bool {
+        return self.v.eq(&other.v)
+    }
+}
+fn needs<T: Eq>(v &T) bool {
+    return v == v
+}
+fn main() {
+    deep := Wrap{v: Wrap{v: Wrap{v: Pair{first: Point{x: 1}, second: 2}}}}
+    print(needs(&deep))
+}

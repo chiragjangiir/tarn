@@ -121,7 +121,7 @@ impl<'a> Cx<'a> {
             match &item.kind {
                 ItemKind::Import(imp) => {
                     let target_path = self.import_targets.get(&(self.inputs[m.0 as usize].name.clone(), imp.path.clone())).cloned().unwrap_or_else(|| imp.path.clone());
-                    let target = self.import_target(&target_path, imp.path_span);
+                    let target = self.import_target(&target_path, imp.path_span, m);
                     let name = imp.path.rsplit('/').next().unwrap_or(&imp.path).to_string();
                     let sym = Symbol {
                         name,
@@ -210,7 +210,7 @@ impl<'a> Cx<'a> {
         id
     }
 
-    fn import_target(&mut self, path: &str, span: Span) -> ModuleTarget {
+    fn import_target(&mut self, path: &str, span: Span, from: ModuleId) -> ModuleTarget {
         if let Some(i) = self.inputs.iter().position(|m| m.name == path) {
             return ModuleTarget::Local(ModuleId(i as u32));
         }
@@ -219,7 +219,15 @@ impl<'a> Cx<'a> {
         }
         let mut d = Diagnostic::error("E2007", "module_not_found", format!("cannot find module `{path}`"))
             .primary(span, "no such module")
-            .note(format!("local modules are files relative to the project root: `{path}.tarn`"));
+            .note(if path.split('/').any(|s| s.is_empty() || s == "." || s == "..") {
+                "import paths name files below the entry file's directory; `.`, `..` and empty segments are not allowed".to_string()
+            } else {
+                match &self.inputs[from.0 as usize].import_root {
+                    // The entry file's directory is the root of local modules.
+                    Some(root) if root != "." => format!("local modules are files relative to the entry file's directory: expected `{root}/{path}.tarn`"),
+                    _ => format!("local modules are files relative to the entry file's directory: expected `{path}.tarn`"),
+                }
+            });
         if let Some(s) = suggest::best(path, prelude::STD_MODULES.iter().copied()) {
             d = d.help(format!("did you mean the standard module `{s}`?"));
         }

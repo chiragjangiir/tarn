@@ -1,7 +1,7 @@
 // Phase 17: linear string accumulation and prefix stripping.
 import "string"
 fn main() {
-    var b = string.Builder.new()
+    var b = Builder.new()
     print(b.len())
     b.push(&"id=")
     b.push_u64(18446744073709551615)
@@ -10,7 +10,7 @@ fn main() {
     print(b.len())
     text := b.finish()
     print(text)
-    var many = string.Builder.new()
+    var many = Builder.new()
     var n = 0
     for n < 1000 {
         many.push(&"ab")

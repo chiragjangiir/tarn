@@ -1,0 +1,11 @@
+error[E3077]: `T` does not implement `Eq`
+  --> tests/types/fail/E3077_impl_bound_type_param.tarn:12:12
+   |
+ 6 | impl Eq for Pair<A: Eq, B: Eq> {
+   |                     -- required by this bound
+12 |     return a == a
+   |            ^^^^^^ `==` on `Pair<T, i32>` requires `Eq`
+   |
+   = note: `Pair<T, i32>: Eq` needs `T: Eq`
+   = help: add the bound to the generic parameter: `T: Eq`
+

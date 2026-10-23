@@ -1,0 +1,11 @@
+error[E4001]: use of moved value `name`
+ --> tests/moves/fail/E4001_interpolate_moved.tarn:4:20
+  |
+3 |     owner := name
+  |              ---- value moved here
+4 |     print(f"hello {name}")
+  |                    ^^^^ value used here after move
+  |
+  = note: `string` is not a copy type, so assigning or passing it moves it
+  = help: to keep using `name`, borrow it where it is moved (`&name`) instead of moving it
+
