@@ -35,7 +35,7 @@ are outside this change.
   constants. Runtime object cache keys include the host architecture and OS, so
   shared caches never mix target objects. No platform abstraction layer is
   added without a second OS.
-- Run the full verified workspace tests, CLI smoke and installer checks on
+- Run the full verified workspace tests, CLI and native container smoke and installer checks on
   separate Ubuntu 22.04 x86_64 and ARM64 runners. A native C ABI regression
   exercises signed/unsigned narrow integers, booleans, floating-point arguments
   and enough arguments to cross both architectures' register/stack boundaries.

@@ -41,3 +41,10 @@ jobs:
       - run: python3 tools/release/test-container-policy.py
       - run: python3 tools/release/test-platform.py
       - run: tools/release/test-install.sh
+      - name: Native builder image smoke
+        run: |
+          VERSION=$(target/release/tarn version | cut -d ' ' -f 2)
+          ARCH=$(sh tools/release/platform.sh)
+          python3 tools/release/container.py prepare "v$VERSION" target/dist target/container-context "$ARCH"
+          docker build --tag tarn-ci-builder target/container-context
+          python3 tools/release/test-container.py tarn-ci-builder "$VERSION"
