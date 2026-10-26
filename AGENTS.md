@@ -13,7 +13,7 @@ Tarn is a new systems programming language focused on:
 - a broad standard library;
 - low dependency overhead;
 - fast development iteration;
-- Linux x86_64 as the initial supported platform;
+- Linux x86_64 and Linux ARM64 as supported platforms;
 - first-class support for coding agents and LLM-driven development;
 - xlinux as one of the first major real-world ports;
 - eventual self-hosting.
@@ -57,7 +57,7 @@ English is the canonical language of the implementation and specification.
 Current supported platform:
 
 ```text
-Linux x86_64
+Linux x86_64 and Linux ARM64 (aarch64), little-endian, 64-bit
 ```
 
 Current Rust edition:

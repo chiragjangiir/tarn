@@ -4,7 +4,7 @@
 
 A memory-safe systems language without a mandatory GC: ownership and borrowing
 checked at compile time, inferred lifetimes, small regular syntax, official
-tooling. Linux x86_64 only for now.
+tooling. Linux x86_64 and ARM64 (aarch64).
 
 ```tarn
 fn add(a i32, b i32) i32 {
@@ -17,7 +17,7 @@ fn main() {
 }
 ```
 
-Status: ownership and executable drops are implemented; the initial Cranelift Linux x86_64 backend supports `build` and `run` (ADR 0027). See [docs/roadmap.md](docs/roadmap.md).
+Status: ownership and executable drops are implemented; the Cranelift Linux x86_64/ARM64 backend supports `build` and `run` (ADRs 0027 and [0079](docs/adr/0079-linux-arm64.md)). See [docs/roadmap.md](docs/roadmap.md).
 
 ```bash
 cargo build --release
@@ -39,7 +39,7 @@ default. Packages receive no installation/build hook authority. See
 [the package guide](docs/packages.md) for a complete local workflow and the
 explicit limits around publisher provenance and registry infrastructure.
 
-## Native execution (Linux x86_64)
+## Native execution (Linux x86_64 and ARM64)
 
 Requires system `cc`, C11/libc headers and libm. From a compiler checkout:
 

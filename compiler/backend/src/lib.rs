@@ -1,4 +1,4 @@
-//! Ahead-of-time Linux x86_64 backend. Ownership semantics come exclusively
+//! Ahead-of-time Linux x86_64 and AArch64 backend. Ownership semantics come exclusively
 //! from post-drop IR. No move checker, loans or provenance enter this crate.
 mod codegen;
 pub mod layout;
@@ -45,8 +45,8 @@ pub fn emit_object(p: &post_drop::Program, t: &Typed) -> Result<Vec<u8>> {
 }
 
 fn emit_entry_object(p: &post_drop::Program, t: &Typed, entry: Option<tarn_ir::FunctionId>) -> Result<Vec<u8>> {
-    if !cfg!(all(target_os = "linux", target_arch = "x86_64")) {
-        return Err(Error::unsupported("target must be Linux x86_64"));
+    if !cfg!(all(target_os = "linux", target_endian = "little", any(target_arch = "x86_64", target_arch = "aarch64"))) {
+        return Err(Error::unsupported("target must be little-endian Linux x86_64 or aarch64"));
     }
     let bugs = post_drop::verify(p, t);
     if !bugs.is_empty() {
@@ -167,7 +167,7 @@ fn cached_runtime(scratch: &Scratch) -> Option<PathBuf> {
         use std::hash::{Hash, Hasher};
         let half = |seed: u8| {
             let mut h = std::collections::hash_map::DefaultHasher::new();
-            (seed, RUNTIME, RUNTIME_FLAGS, &compiler, metadata.len(), modified).hash(&mut h);
+            (seed, std::env::consts::ARCH, std::env::consts::OS, RUNTIME, RUNTIME_FLAGS, &compiler, metadata.len(), modified).hash(&mut h);
             h.finish()
         };
         format!("{:016x}{:016x}", half(0), half(1))

@@ -256,3 +256,10 @@ projections and ownership/drop checking. A small console C adapter only converts
 SIGPIPE to a reported errno using a thread-local signal mask. Clocks use the
 existing FFI layer and Linux x86_64 timespec; no scheduler or ownership catalog
 is added. See [ADR 0060](adr/0060-general-purpose-foundations.md).
+
+## Native platforms
+
+The backend supports native builds on little-endian Linux x86_64 and ARM64
+(aarch64). They share the 64-bit layout and Linux runtime; Cranelift selects
+the host ISA and calling convention. Distribution uses per-architecture archives
+and a multi-platform builder image. See [ADR 0079](adr/0079-linux-arm64.md).

@@ -1,12 +1,14 @@
 # Linux toolchain releases
 
 GitHub Actions checks the workspace on main and pull requests. A `vX.Y.Z` tag
-runs the same full tests, builds Tarn and Tarn LSP on Ubuntu 22.04, exercises the
+runs the same full tests, builds Tarn and Tarn LSP on native Ubuntu 22.04 x86_64 and ARM64 runners, exercises the
 installer, packages the binaries and publishes a GitHub prerelease. The version
 must match Cargo.toml. Release assets are never replaced by the workflow.
 Formatting currently reports existing debt without blocking releases.
 
-The supported binary platform is Linux x86_64 with glibc 2.35 or newer.
+Supported binary platforms are little-endian Linux x86_64 and ARM64 (aarch64),
+with glibc 2.35 or newer. ARM64 artifacts begin with the next release after
+0.0.7; older published releases stay x86_64-only.
 Native application compilation additionally requires `cc` and libc development
 headers. Particular APIs may require native libraries, e.g. OpenSSL or libdbus.
 The standard library and runtime are embedded in the compiler.
@@ -36,7 +38,9 @@ release exists. Published tags and release assets must remain immutable.
 ## Official application-builder image
 
 Every successful release also publishes `ghcr.io/tarn-lng/tarn:X.Y.Z` for
-Linux x86_64. `ghcr.io/tarn-lng/tarn:latest` points to the same image as the
+Linux amd64 and arm64. The version tag is a platform index: Docker chooses the
+native variant. Explicit `X.Y.Z-amd64` and `X.Y.Z-arm64` tags are also available
+for new releases. `ghcr.io/tarn-lng/tarn:latest` points to the same image as the
 highest numeric published release, including Tarn's experimental prereleases.
 Main-branch pushes do not move latest. Version tags are never replaced by the
 workflow; a retry checks the existing image's version and source revision and
@@ -75,7 +79,7 @@ runtime requirement. The output parent directory (`/out`) must exist.
 ### Publication and recovery
 
 1. The release workflow runs all compiler tests, builds and publishes the
-   immutable archive, then calls `container.yml` directly. A release created
+   immutable archives with combined SHA256SUMS, then calls `container.yml` directly. A release created
    with GITHUB_TOKEN does not trigger a second release-event workflow.
 2. The container workflow downloads the published archive, verifies its hash
    and exact file inventory, builds the image and tests native compilation,
@@ -86,6 +90,7 @@ runtime requirement. The output parent directory (`/out`) must exist.
    prevents both downgrades and lost promotions when GitHub replaces a pending
    concurrency job. If that version image is not available yet, promotion fails
    without moving latest; its image publication or a manual retry can recover.
+   Promotion copies the complete platform index rather than a local single-architecture image.
 4. On first publication, an organization administrator must make the GHCR
    package public in its package settings. Anonymous pulls are checked after
    setup. GitHub defaults new container packages to private.
@@ -107,3 +112,16 @@ docker build --platform linux/amd64 --build-arg VERSION=0.0.6 \
     -t tarn-container-test:0.0.6 target/container-context
 python3 tools/release/test-container.py tarn-container-test:0.0.6 0.0.6
 ```
+
+### Architecture selection
+
+Release archives are named `tarn-X.Y.Z-linux-x86_64.tar.gz` and
+`tarn-X.Y.Z-linux-aarch64.tar.gz`. The installer selects from `uname -m`; ARMv7,
+big-endian ARM, macOS and Windows are rejected. A single SHA256SUMS lists both
+archives; only the selected archive is downloaded and verified.
+
+`tools/release/platform.sh` detects the native package architecture. For local
+ARM container preparation, pass `aarch64` as the final argument to
+`tools/release/container.py prepare`. Build and run that image on ARM64 using
+`--platform linux/arm64`. Release CI tests both architectures natively before
+publishing the multi-platform version index.

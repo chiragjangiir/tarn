@@ -1,4 +1,4 @@
-//! The single Linux x86_64 layout authority for native code and runtime ABI.
+//! The single 64-bit Linux (x86_64/AArch64) layout authority for native code and runtime ABI.
 //! It lives beside the IR so the frontend can report the same limits the
 //! backend enforces (E3075) without a second copy of the layout rules.
 use tarn_types::{Ty, Typed};

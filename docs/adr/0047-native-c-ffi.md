@@ -104,3 +104,8 @@ magic surface (contrary to ADR 0020).
 - Leaks or close-ordering bugs in real wrapper code, justifying verified
   foreign-resource destruction.
 - Package-manager design (`tarn.toml`) replacing `--link`.
+
+## Platform extension
+
+ADR [0079](0079-linux-arm64.md) extends native execution to little-endian Linux
+ARM64 (AAPCS64) while preserving the existing scalar-only C FFI boundary.

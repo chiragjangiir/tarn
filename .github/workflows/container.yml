@@ -23,36 +23,37 @@ env:
   IMAGE: ghcr.io/tarn-lng/tarn
   GH_TOKEN: ${{ github.token }}
 jobs:
-  version:
+  metadata:
     runs-on: ubuntu-22.04
-    timeout-minutes: 20
     outputs:
-      tag: ${{ steps.release.outputs.tag }}
+      matrix: ${{ steps.release.outputs.matrix }}
       version: ${{ steps.release.outputs.version }}
+      revision: ${{ steps.release.outputs.revision }}
+      tag: ${{ steps.release.outputs.tag }}
+      exists: ${{ steps.existing.outputs.exists }}
     steps:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
-      - name: Verify published release
+      - name: Verify published release and discover its architectures
         id: release
         env:
           TAG: ${{ inputs.tag || github.event.release.tag_name }}
         run: |
           [[ "$TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]
           gh api "repos/$GITHUB_REPOSITORY/releases/tags/$TAG" > release.json
-          python3 -c 'import json; r=json.load(open("release.json")); assert not r["draft"]'
+          MATRIX=$(python3 tools/release/container.py matrix < release.json)
           REVISION=$(gh api "repos/$GITHUB_REPOSITORY/commits/$TAG" --jq .sha)
-          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
-          echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
-          echo "VERSION=${TAG#v}" >> "$GITHUB_ENV"
-          echo "REVISION=$REVISION" >> "$GITHUB_ENV"
-      - uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ github.token }}
-      - name: Check for an existing version without replacing it
+          {
+            echo "matrix=$MATRIX"
+            echo "tag=$TAG"
+            echo "version=${TAG#v}"
+            echo "revision=$REVISION"
+          } >> "$GITHUB_OUTPUT"
+      - name: Check for an existing immutable version
         id: existing
+        env:
+          VERSION: ${{ steps.release.outputs.version }}
         run: |
           PACKAGE="orgs/tarn-lng/packages/container/tarn"
           if gh api "$PACKAGE" > package.json 2> package-error.log; then
@@ -65,38 +66,20 @@ jobs:
             exit 1
           fi
           echo "exists=$EXISTS" >> "$GITHUB_OUTPUT"
-      - name: Download and verify release binaries
-        if: steps.existing.outputs.exists != 'true'
-        env:
-          TAG: ${{ steps.release.outputs.tag }}
-        run: |
-          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --dir assets \
-            --pattern "tarn-$VERSION-linux-x86_64.tar.gz" --pattern SHA256SUMS
-          python3 tools/release/container.py prepare "$TAG" assets target/container-context
-      - name: Build release image
-        if: steps.existing.outputs.exists != 'true'
-        run: |
-          docker build --platform linux/amd64 --build-arg "VERSION=$VERSION" \
-            --build-arg "REVISION=$REVISION" --tag "$IMAGE:$VERSION" target/container-context
-      - name: Pull existing immutable version
-        if: steps.existing.outputs.exists == 'true'
-        run: docker pull "$IMAGE:$VERSION"
-      - name: Verify image identity and application builds
-        run: |
-          test "$(docker inspect --format '{{ index .Config.Labels "org.opencontainers.image.version" }}' "$IMAGE:$VERSION")" = "$VERSION"
-          test "$(docker inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$IMAGE:$VERSION")" = "$REVISION"
-          python3 tools/release/test-container.py "$IMAGE:$VERSION" "$VERSION"
-      - name: Publish new version
-        if: steps.existing.outputs.exists != 'true'
-        run: docker push "$IMAGE:$VERSION"
-  latest:
-    needs: version
-    runs-on: ubuntu-22.04
-    timeout-minutes: 10
-    # Serialize promotions across different releases; never cancel a running push.
-    concurrency:
-      group: tarn-container-latest
-      cancel-in-progress: false
+  architecture:
+    needs: metadata
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.metadata.outputs.matrix) }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    env:
+      VERSION: ${{ needs.metadata.outputs.version }}
+      REVISION: ${{ needs.metadata.outputs.revision }}
+      TAG: ${{ needs.metadata.outputs.tag }}
+      ARCH: ${{ matrix.arch }}
+      PLATFORM: ${{ matrix.platform }}
+      EXISTS: ${{ needs.metadata.outputs.exists }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -106,17 +89,113 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ github.token }}
-      - name: Promote the highest published version
+      - name: Select image reference
+        run: |
+          BUILD=false
+          if [ "$EXISTS" = true ]; then
+            REFERENCE="$IMAGE:$VERSION"
+          else
+            REFERENCE="$IMAGE:$VERSION-$PLATFORM"
+            PACKAGE="orgs/tarn-lng/packages/container/tarn"
+            if gh api "$PACKAGE" > package.json 2> package-error.log; then
+              gh api --paginate --slurp "$PACKAGE/versions?per_page=100" > versions.json
+              FOUND=$(jq --arg tag "$VERSION-$PLATFORM" '[.[][] | .metadata.container.tags[] | select(. == $tag)] | length > 0' versions.json)
+              if [ "$FOUND" != true ]; then BUILD=true; fi
+            elif grep -q 'HTTP 404' package-error.log; then
+              BUILD=true
+            else
+              cat package-error.log >&2
+              exit 1
+            fi
+          fi
+          {
+            echo "REFERENCE=$REFERENCE"
+            echo "BUILD=$BUILD"
+          } >> "$GITHUB_ENV"
+      - name: Download and verify architecture binaries
+        if: env.BUILD == 'true'
+        run: |
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --dir assets \
+            --pattern "tarn-$VERSION-linux-$ARCH.tar.gz" --pattern SHA256SUMS
+          python3 tools/release/container.py prepare "$TAG" assets target/container-context "$ARCH"
+      - name: Build architecture image
+        if: env.BUILD == 'true'
+        run: |
+          docker build --platform "linux/$PLATFORM" --build-arg "VERSION=$VERSION" \
+            --build-arg "REVISION=$REVISION" --tag "$REFERENCE" target/container-context
+      - name: Pull existing immutable version
+        if: env.BUILD != 'true'
+        run: docker pull --platform "linux/$PLATFORM" "$REFERENCE"
+      - name: Verify architecture, identity and application builds
+        run: |
+          test "$(docker inspect --format '{{.Architecture}}' "$REFERENCE")" = "$PLATFORM"
+          test "$(docker inspect --format '{{ index .Config.Labels "org.opencontainers.image.version" }}' "$REFERENCE")" = "$VERSION"
+          test "$(docker inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$REFERENCE")" = "$REVISION"
+          python3 tools/release/test-container.py "$REFERENCE" "$VERSION"
+      - name: Publish architecture by digest
+        if: env.EXISTS != 'true'
+        run: |
+          # Reuse a previously published variant on retries; neither the
+          # platform tag nor the final version index may be replaced.
+          if [ "$BUILD" = true ]; then docker push "$REFERENCE"; fi
+          DIGEST=$(docker inspect --format '{{index .RepoDigests 0}}' "$REFERENCE")
+          mkdir -p digests
+          printf '%s\n' "$DIGEST" > "digests/$PLATFORM"
+      - uses: actions/upload-artifact@v4
+        if: env.EXISTS != 'true'
+        with:
+          name: container-digest-${{ matrix.platform }}
+          path: digests/*
+          if-no-files-found: error
+  version:
+    needs: [metadata, architecture]
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      - uses: actions/download-artifact@v4
+        if: needs.metadata.outputs.exists != 'true'
+        with:
+          pattern: container-digest-*
+          path: digests
+          merge-multiple: true
+      - name: Publish immutable version index
+        if: needs.metadata.outputs.exists != 'true'
+        env:
+          VERSION: ${{ needs.metadata.outputs.version }}
+        run: |
+          mapfile -t SOURCES < <(cat digests/*)
+          docker buildx imagetools create --tag "$IMAGE:$VERSION" "${SOURCES[@]}"
+  latest:
+    needs: version
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    concurrency:
+      group: tarn-container-latest
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      - name: Promote the highest published version, preserving every platform
         run: |
           gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/releases?per_page=100" > releases.json
           HIGHEST=$(python3 tools/release/container.py highest < releases.json)
-          # Every queued promotion recomputes its target. GitHub may replace a
-          # pending concurrency job, so it must not depend on its caller's tag.
           VERSION=${HIGHEST#v}
           REVISION=$(gh api "repos/$GITHUB_REPOSITORY/commits/$HIGHEST" --jq .sha)
-          docker pull "$IMAGE:$VERSION"
+          docker pull --platform linux/amd64 "$IMAGE:$VERSION"
           test "$(docker inspect --format '{{ index .Config.Labels "org.opencontainers.image.version" }}' "$IMAGE:$VERSION")" = "$VERSION"
           test "$(docker inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$IMAGE:$VERSION")" = "$REVISION"
-          docker tag "$IMAGE:$VERSION" "$IMAGE:latest"
-          docker push "$IMAGE:latest"
-          echo "Published $IMAGE:$VERSION and promoted the same image to $IMAGE:latest." >> "$GITHUB_STEP_SUMMARY"
+          # docker tag/push would copy only the runner's local architecture.
+          docker buildx imagetools create --tag "$IMAGE:latest" "$IMAGE:$VERSION"
+          echo "Promoted $IMAGE:$VERSION to $IMAGE:latest with its full platform index." >> "$GITHUB_STEP_SUMMARY"

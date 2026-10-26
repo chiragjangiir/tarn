@@ -1,10 +1,14 @@
 #!/bin/sh
 set -eu
 ROOT=$(pwd)
+ARCH=$(sh tools/release/platform.sh)
 TEMP=$(mktemp -d)
 trap 'rm -rf "$TEMP"' EXIT HUP INT TERM
 VERSION=$(target/release/tarn version | cut -d ' ' -f 2)
 tools/release/package.sh "$VERSION"
+# A release contains checksums for both architectures; the other archive is
+# deliberately absent from this fixture to exercise selective verification.
+printf '%s  tarn-%s-linux-other.tar.gz\n' "$(printf '%064d' 0)" "$VERSION" >> target/dist/SHA256SUMS
 mkdir "$TEMP/mock"
 cat > "$TEMP/mock/curl" <<'MOCK'
 #!/bin/sh
@@ -29,7 +33,7 @@ printf 'unmanaged' > "$TEMP/bin/tarn"
 if tools/release/install.sh --version "$VERSION" --prefix "$TEMP/bin"; then echo 'Unmanaged binary overwritten' >&2; exit 1; fi
 rm "$TEMP/bin/tarn"
 cp target/dist/SHA256SUMS "$TEMP/sums"
-printf 'corruption' >> "target/dist/tarn-$VERSION-linux-x86_64.tar.gz"
+printf 'corruption' >> "target/dist/tarn-$VERSION-linux-$ARCH.tar.gz"
 if tools/release/install.sh --version "$VERSION" --prefix "$TEMP/bin"; then echo 'Corrupt download accepted' >&2; exit 1; fi
 test ! -e "$TEMP/bin/tarn"
 tools/release/package.sh "$VERSION"

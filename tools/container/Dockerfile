@@ -2,7 +2,7 @@ FROM debian:bookworm-slim
 ARG VERSION
 ARG REVISION
 LABEL org.opencontainers.image.source="https://github.com/tarn-lng/tarn" \
-      org.opencontainers.image.description="Tarn Linux x86_64 compiler, LSP and native application build tools" \
+      org.opencontainers.image.description="Tarn Linux x86_64/ARM64 compiler, LSP and native application build tools" \
       org.opencontainers.image.licenses="MIT OR Apache-2.0" \
       org.opencontainers.image.version="${VERSION}" \
       org.opencontainers.image.revision="${REVISION}"
