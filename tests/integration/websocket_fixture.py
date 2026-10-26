@@ -127,6 +127,7 @@ def serve_one(raw, context):
         raw.close()
         return
     try:
+        assert connection.selected_alpn_protocol() == 'http/1.1', connection.selected_alpn_protocol()
         target = handshake(connection)
         if target is None or target in ('/badaccept', '/extension'):
             return
@@ -171,6 +172,8 @@ with tempfile.TemporaryDirectory(prefix='tarn-ws-') as directory:
                     '-addext', 'subjectAltName=DNS:localhost'], check=True, capture_output=True)
     context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     context.load_cert_chain(cert, key)
+    # Prefer h2 when offered: HTTP/1.1 upgrades must constrain client ALPN.
+    context.set_alpn_protocols(['h2', 'http/1.1'])
     listener = socket.create_server(('127.0.0.1', 0))
     port = listener.getsockname()[1]
     threading.Thread(target=serve, args=(listener, context), daemon=True).start()

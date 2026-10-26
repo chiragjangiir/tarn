@@ -139,7 +139,8 @@ Deferred until a blocking handshake is shown to matter.
   the stdlib leaves encode it.
 - Blocking mode waits without a deadline after connect, like a blocking
   `TcpStream`. Callers needing one use the async helpers with ADR 0039 timeouts.
-- No ALPN control, client certificates, proxy or session resumption.
+- No caller-configurable ALPN, client certificates, proxy or session resumption.
+  TLS streams offer HTTP/1.1 only; see the production regression below.
 
 ## Acceptance (implemented)
 
@@ -165,3 +166,20 @@ Golden tests: `tests/types/fail/E3022_tls_stream_share` (not Share) and
 A measured need for async handshakes at scale, a protocol requiring ALPN
 (HTTP/2) or client certificates, or connect-only send/recv bugs in the system
 libcurl would justify the multi interface or a direct OpenSSL binding.
+
+## Production regression: HTTP/1.1 ALPN (0.0.7)
+
+The Orvix voice agent exposed a mismatch against a server offering HTTP/2:
+libcurl negotiated h2 while the WebSocket client sent an HTTP/1.1 upgrade.
+The peer closed the connection and curl returned receive error 56. The original
+local fixture did not advertise ALPN, so it could not catch this failure.
+
+The connect-only bridge now sets `CURLOPT_HTTP_VERSION` to
+`CURL_HTTP_VERSION_1_1`. This prevents libcurl from negotiating h2 for a stream
+whose caller writes an HTTP/1.1 protocol. It does not affect `https.request`.
+The WebSocket fixture now advertises h2 first and http/1.1 second and asserts
+that the client negotiates http/1.1 before checking the upgrade. It fails with
+Tarn 0.0.6 and passes with the fix, without a public endpoint or API key.
+
+A future HTTP/2 client will require explicit ALPN configuration and a way to
+inspect the negotiated protocol; it must not reuse this default implicitly.
