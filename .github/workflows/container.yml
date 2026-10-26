@@ -106,18 +106,17 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ github.token }}
-      - name: Promote only the highest published version
-        env:
-          TAG: ${{ needs.version.outputs.tag }}
-          VERSION: ${{ needs.version.outputs.version }}
+      - name: Promote the highest published version
         run: |
           gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/releases?per_page=100" > releases.json
           HIGHEST=$(python3 tools/release/container.py highest < releases.json)
-          if [ "$TAG" != "$HIGHEST" ]; then
-            echo "Published $IMAGE:$VERSION; latest is reserved for $HIGHEST." >> "$GITHUB_STEP_SUMMARY"
-            exit 0
-          fi
+          # Every queued promotion recomputes its target. GitHub may replace a
+          # pending concurrency job, so it must not depend on its caller's tag.
+          VERSION=${HIGHEST#v}
+          REVISION=$(gh api "repos/$GITHUB_REPOSITORY/commits/$HIGHEST" --jq .sha)
           docker pull "$IMAGE:$VERSION"
+          test "$(docker inspect --format '{{ index .Config.Labels "org.opencontainers.image.version" }}' "$IMAGE:$VERSION")" = "$VERSION"
+          test "$(docker inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$IMAGE:$VERSION")" = "$REVISION"
           docker tag "$IMAGE:$VERSION" "$IMAGE:latest"
           docker push "$IMAGE:latest"
           echo "Published $IMAGE:$VERSION and promoted the same image to $IMAGE:latest." >> "$GITHUB_STEP_SUMMARY"

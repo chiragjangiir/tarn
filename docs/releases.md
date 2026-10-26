@@ -81,8 +81,11 @@ runtime requirement. The output parent directory (`/out`) must exist.
    and exact file inventory, builds the image and tests native compilation,
    execution, Base64/SHA-256 and the stdio LSP without network access.
 3. It publishes the version tag and serializes latest promotions. Before
-   promotion it queries published releases in numeric version order, excluding
-   drafts, so an older workflow cannot overwrite a newer latest.
+   promotion it selects the highest published release in numeric version order,
+   excluding drafts, regardless of which release queued the promotion. This
+   prevents both downgrades and lost promotions when GitHub replaces a pending
+   concurrency job. If that version image is not available yet, promotion fails
+   without moving latest; its image publication or a manual retry can recover.
 4. On first publication, an organization administrator must make the GHCR
    package public in its package settings. Anonymous pulls are checked after
    setup. GitHub defaults new container packages to private.
