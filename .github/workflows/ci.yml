@@ -30,4 +30,5 @@ jobs:
           target/release/tarn init /tmp/tarn-smoke
           cd /tmp/tarn-smoke
           "$GITHUB_WORKSPACE/target/release/tarn" run
+      - run: python3 tools/release/test-container-policy.py
       - run: tools/release/test-install.sh

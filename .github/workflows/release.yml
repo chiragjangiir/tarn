@@ -73,3 +73,11 @@ jobs:
           gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --verify-tag --prerelease --generate-notes \
             --title "Tarn $TAG — experimental Linux x86_64" \
             artifacts/target/dist/*.tar.gz artifacts/target/dist/SHA256SUMS artifacts/tools/release/install.sh
+  container:
+    needs: [build, publish]
+    permissions:
+      contents: read
+      packages: write
+    uses: ./.github/workflows/container.yml
+    with:
+      tag: ${{ needs.build.outputs.tag }}

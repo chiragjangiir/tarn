@@ -1,0 +1,123 @@
+name: Publish release container
+on:
+  workflow_call:
+    inputs:
+      tag:
+        type: string
+        required: true
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Published release tag (vX.Y.Z)
+        type: string
+        required: true
+  release:
+    types: [published]
+permissions:
+  contents: read
+  packages: write
+concurrency:
+  group: container-${{ inputs.tag || github.event.release.tag_name }}
+  cancel-in-progress: false
+env:
+  IMAGE: ghcr.io/tarn-lng/tarn
+  GH_TOKEN: ${{ github.token }}
+jobs:
+  version:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    outputs:
+      tag: ${{ steps.release.outputs.tag }}
+      version: ${{ steps.release.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Verify published release
+        id: release
+        env:
+          TAG: ${{ inputs.tag || github.event.release.tag_name }}
+        run: |
+          [[ "$TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]
+          gh api "repos/$GITHUB_REPOSITORY/releases/tags/$TAG" > release.json
+          python3 -c 'import json; r=json.load(open("release.json")); assert not r["draft"]'
+          REVISION=$(gh api "repos/$GITHUB_REPOSITORY/commits/$TAG" --jq .sha)
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+          echo "VERSION=${TAG#v}" >> "$GITHUB_ENV"
+          echo "REVISION=$REVISION" >> "$GITHUB_ENV"
+      - uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      - name: Check for an existing version without replacing it
+        id: existing
+        run: |
+          PACKAGE="orgs/tarn-lng/packages/container/tarn"
+          if gh api "$PACKAGE" > package.json 2> package-error.log; then
+            gh api --paginate --slurp "$PACKAGE/versions?per_page=100" > versions.json
+            EXISTS=$(jq --arg version "$VERSION" '[.[][] | .metadata.container.tags[] | select(. == $version)] | length > 0' versions.json)
+          elif grep -q 'HTTP 404' package-error.log; then
+            EXISTS=false
+          else
+            cat package-error.log >&2
+            exit 1
+          fi
+          echo "exists=$EXISTS" >> "$GITHUB_OUTPUT"
+      - name: Download and verify release binaries
+        if: steps.existing.outputs.exists != 'true'
+        env:
+          TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --dir assets \
+            --pattern "tarn-$VERSION-linux-x86_64.tar.gz" --pattern SHA256SUMS
+          python3 tools/release/container.py prepare "$TAG" assets target/container-context
+      - name: Build release image
+        if: steps.existing.outputs.exists != 'true'
+        run: |
+          docker build --platform linux/amd64 --build-arg "VERSION=$VERSION" \
+            --build-arg "REVISION=$REVISION" --tag "$IMAGE:$VERSION" target/container-context
+      - name: Pull existing immutable version
+        if: steps.existing.outputs.exists == 'true'
+        run: docker pull "$IMAGE:$VERSION"
+      - name: Verify image identity and application builds
+        run: |
+          test "$(docker inspect --format '{{ index .Config.Labels "org.opencontainers.image.version" }}' "$IMAGE:$VERSION")" = "$VERSION"
+          test "$(docker inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$IMAGE:$VERSION")" = "$REVISION"
+          python3 tools/release/test-container.py "$IMAGE:$VERSION" "$VERSION"
+      - name: Publish new version
+        if: steps.existing.outputs.exists != 'true'
+        run: docker push "$IMAGE:$VERSION"
+  latest:
+    needs: version
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    # Serialize promotions across different releases; never cancel a running push.
+    concurrency:
+      group: tarn-container-latest
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      - name: Promote only the highest published version
+        env:
+          TAG: ${{ needs.version.outputs.tag }}
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/releases?per_page=100" > releases.json
+          HIGHEST=$(python3 tools/release/container.py highest < releases.json)
+          if [ "$TAG" != "$HIGHEST" ]; then
+            echo "Published $IMAGE:$VERSION; latest is reserved for $HIGHEST." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          docker pull "$IMAGE:$VERSION"
+          docker tag "$IMAGE:$VERSION" "$IMAGE:latest"
+          docker push "$IMAGE:latest"
+          echo "Published $IMAGE:$VERSION and promoted the same image to $IMAGE:latest." >> "$GITHUB_STEP_SUMMARY"
