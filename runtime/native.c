@@ -1406,6 +1406,11 @@ void tarn_rt_net_tls_connect(TarnNetRaw *out, const TarnString *url, const TarnS
     SET(10002, address); SET(181, 2L); SET(182, 2L);
     SET(52, 0L); SET(64, 1L); SET(81, 2L); SET(99, 1L);
     SET(10004, ""); SET(156, (long)timeout); SET(141, 1L);
+    /* 84 HTTP_VERSION = 1.1: the stream carries the caller's own protocol
+     * (e.g. a WebSocket upgrade), so ALPN must not negotiate h2. libcurl's
+     * default for https offers h2 and servers like api.openai.com pick it,
+     * which breaks any HTTP/1.1 upgrade sent on the raw stream. */
+    SET(84, 2L);
     if (*trust) SET(10065, trust);
 #undef SET
     if (!code) code = tarn_curl.perform(handle);
