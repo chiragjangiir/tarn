@@ -1,10 +1,11 @@
 #ifndef _GNU_SOURCE
 #define _GNU_SOURCE
 #endif
-/* Tarn internal runtime ABI v0: Linux x86_64, System V C ABI. */
+/* Tarn internal runtime ABI v0: little-endian Linux x86_64/AArch64, native C ABI. */
 #define _POSIX_C_SOURCE 200809L
 #include <sys/timerfd.h>
 #include <stdint.h>
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -36,6 +37,8 @@ static void exec_trace(const char *kind, const char *event, uintptr_t storage) {
     }
 }
 
+_Static_assert(sizeof(void *) == 8 && sizeof(long) == 8 && CHAR_BIT == 8,
+               "Tarn requires a 64-bit Linux LP64 runtime");
 typedef struct { uint64_t len; unsigned char bytes[]; } TarnString;
 /* Owned string pointers are unique. Literals allocate; moves transfer ownership. */
 TarnString *tarn_rt_string(const unsigned char *data, uint64_t len) {
@@ -1274,7 +1277,7 @@ int64_t tarn_console_write(int32_t fd, const uint8_t *data, uint64_t count) {
 }
 int32_t tarn_console_flush(void) { return (int32_t)tarn_console_output(-1, NULL, 0, 1); }
 
-/* Optional Linux x86_64 libcurl ABI adapter. No native owner escapes a call.
+/* Optional 64-bit Linux libcurl ABI adapter. No native owner escapes a call.
  * Stable option numbers: curl 7.88.1 include/curl/curl.h (curl.se).
  * Loaded lazily: applications not using HTTPS need no libcurl installation.
  */

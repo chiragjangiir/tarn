@@ -220,3 +220,8 @@ PIE; faster runtime build reuse; richer source-position runtime panic messages.
 All are deferred. No optimization passes, LTO, PGO, JIT, LLVM, platform expansion,
 async runtime or custom destructors were added. Opaque stdlib bootstrap behavior
 still prevents claiming complete end-to-end language memory safety.
+
+## Platform extension
+
+ADR [0079](0079-linux-arm64.md) extends native execution to little-endian Linux
+ARM64 (AAPCS64) while preserving the existing scalar-only C FFI boundary.

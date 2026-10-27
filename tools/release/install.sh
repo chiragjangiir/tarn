@@ -23,7 +23,13 @@ if [ "$UNINSTALL" = 1 ]; then
   echo 'Tarn uninstalled'; exit 0
 fi
 case "$VERSION" in ''|*[!0-9.]*|.*|*..*|*.) echo 'Use a numeric X.Y.Z release version' >&2; exit 1 ;; esac
-[ "$(uname -s)" = Linux ] && [ "$(uname -m)" = x86_64 ] || { echo 'Only Linux x86_64 is supported' >&2; exit 1; }
+# Kept inline: the installer is a standalone release asset.
+[ "$(uname -s)" = Linux ] || { echo 'Only Linux is supported' >&2; exit 1; }
+case "$(uname -m)" in
+  x86_64) ARCH=x86_64 ;;
+  aarch64|arm64) ARCH=aarch64 ;;
+  *) echo 'Only Linux x86_64 and ARM64 (aarch64) are supported' >&2; exit 1 ;;
+esac
 for tool in curl sha256sum tar mktemp; do command -v "$tool" >/dev/null || { echo "Missing tool: $tool" >&2; exit 1; }; done
 mkdir -p "$PREFIX"
 if [ "$FORCE" != 1 ] && { [ -e "$PREFIX/tarn" ] || [ -L "$PREFIX/tarn" ] || [ -e "$PREFIX/tarn-lsp" ] || [ -L "$PREFIX/tarn-lsp" ]; }; then
@@ -31,11 +37,14 @@ if [ "$FORCE" != 1 ] && { [ -e "$PREFIX/tarn" ] || [ -L "$PREFIX/tarn" ] || [ -e
 fi
 TEMP=$(mktemp -d "$PREFIX/.tarn-install.XXXXXX")
 trap 'rm -rf "$TEMP"' EXIT HUP INT TERM
-ASSET="tarn-$VERSION-linux-x86_64.tar.gz"
+ASSET="tarn-$VERSION-linux-$ARCH.tar.gz"
 BASE="https://github.com/tarn-lng/tarn/releases/download/v$VERSION"
 curl --fail --location --proto '=https' --proto-redir '=https' --tlsv1.2 --retry 3 "$BASE/$ASSET" -o "$TEMP/$ASSET"
 curl --fail --location --proto '=https' --proto-redir '=https' --tlsv1.2 --retry 3 "$BASE/SHA256SUMS" -o "$TEMP/SHA256SUMS"
-(cd "$TEMP"; sha256sum --check --strict SHA256SUMS)
+# The shared checksum file lists every architecture; download and check only
+# the selected archive. Reject duplicate/missing entries before extraction.
+awk -v asset="$ASSET" '$2 == asset {print; count++} END {if (count != 1) exit 1}' "$TEMP/SHA256SUMS" > "$TEMP/selected-sums"
+(cd "$TEMP"; sha256sum --check --strict selected-sums)
 # The trusted release contains exactly these regular files, with no directories or links.
 CONTENTS=$(tar -tzf "$TEMP/$ASSET" | LC_ALL=C sort)
 EXPECTED=$(printf 'COPYING\nREADME.md\ntarn\ntarn-lsp')

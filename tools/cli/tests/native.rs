@@ -64,7 +64,8 @@ fn link_grants_validate_and_explain_failures() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("cannot find library `tarn_missing_library`"), "{stderr}");
     // SQLite is present on the reference machine only as its runtime soname.
-    let sqlite = std::path::Path::new("/usr/lib/x86_64-linux-gnu/libsqlite3.so.0");
+    let multiarch = if cfg!(target_arch = "aarch64") { "aarch64-linux-gnu" } else { "x86_64-linux-gnu" };
+    let sqlite = std::path::PathBuf::from(format!("/usr/lib/{multiarch}/libsqlite3.so.0"));
     if sqlite.exists() {
         std::fs::write(&source, "extern \"C\" fn sqlite3_libversion_number() i32\nfn main() {\n    unsafe { print(sqlite3_libversion_number() >= 3000000) }\n}\n").unwrap();
         let output = Command::new(cli).arg("run").arg(&source).args(["--link", ":libsqlite3.so.0"]).output().unwrap();

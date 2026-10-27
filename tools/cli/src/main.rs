@@ -22,7 +22,7 @@ usage:
     tarn types [entry]           print the type of every local and parameter
     tarn ir [entry]              print typed IR; --drops prints executable drops
     tarn build [entry] [-o path] [--link lib]... [--json]
-                                     emit a Linux x86_64 executable; each
+                                     emit a native Linux x86_64/ARM64 executable; each
                                      --link grants a system C library
     tarn run [entry] [--link lib]... [--json] [--watch]
                                      build temporarily and execute

@@ -7,7 +7,15 @@ permissions:
   contents: read
 jobs:
   test:
-    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-22.04
+          - arch: aarch64
+            runner: ubuntu-22.04-arm
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
@@ -31,4 +39,12 @@ jobs:
           cd /tmp/tarn-smoke
           "$GITHUB_WORKSPACE/target/release/tarn" run
       - run: python3 tools/release/test-container-policy.py
+      - run: python3 tools/release/test-platform.py
       - run: tools/release/test-install.sh
+      - name: Native builder image smoke
+        run: |
+          VERSION=$(target/release/tarn version | cut -d ' ' -f 2)
+          ARCH=$(sh tools/release/platform.sh)
+          python3 tools/release/container.py prepare "v$VERSION" target/dist target/container-context "$ARCH"
+          docker build --build-arg "VERSION=$VERSION" --build-arg "REVISION=$GITHUB_SHA" --tag tarn-ci-builder target/container-context
+          python3 tools/release/test-container.py tarn-ci-builder "$VERSION"

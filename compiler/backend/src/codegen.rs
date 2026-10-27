@@ -166,7 +166,7 @@ fn environment(t: &Typed, f: &ir::Function) -> Result<(u32, Vec<(u32, Ty)>)> {
     }
     Ok((offset.max(1), fields))
 }
-/// `extern "C"` (ADR 0047): System V x86_64 scalars only. Narrow integers and
+/// `extern "C"` (ADR 0047): native Linux x86_64/AArch64 scalars only. Narrow integers and
 /// bool are extended by the caller as C compilers expect.
 fn c_type(ty: &Ty) -> Option<cl::AbiParam> {
     let ext = |t, signed: bool| if signed { cl::AbiParam::new(t).sext() } else { cl::AbiParam::new(t).uext() };
@@ -354,7 +354,9 @@ pub fn emit_entry(p: &post::Program, t: &Typed, test: bool) -> Result<Vec<u8>> {
     verify_dynamic(p, t)?;
     let mut settings = settings::builder();
     settings.set("opt_level", "speed").map_err(|e| Error::bug(e.to_string()))?;
-    settings.set("is_pic", "false").map_err(|e| Error::bug(e.to_string()))?;
+    // AArch64 non-PIC symbol addresses use relocations that cranelift-object
+    // 0.125.3 cannot emit. Its PIC/GOT relocations are supported by ELF.
+    settings.set("is_pic", if cfg!(target_arch = "aarch64") { "true" } else { "false" }).map_err(|e| Error::bug(e.to_string()))?;
     // Cranelift's IR verifier checks this backend, not the user's program.
     // Debug builds of the compiler (and so every test run) keep it; release
     // builds skip its cost unless TARN_VERIFY_CODEGEN asks for it.
@@ -1241,7 +1243,7 @@ impl Cx<'_, '_> {
     fn copy(&mut self, dest: cl::Value, source: cl::Value, size: u32) {
         // Small internal copy, no dependency on libc memcpy signature. Load all
         // bytes before writing so overlapping aggregate assignments are safe.
-        // Word-sized chunks (x86_64 permits unaligned access); the tail uses
+        // Word-sized chunks with unaligned MemFlags on both supported targets; the tail uses
         // narrower widths. Byte-wise copies dominated aggregate-heavy code.
         let mut chunks = Vec::new();
         let mut offset = 0u32;
