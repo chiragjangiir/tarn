@@ -90,9 +90,12 @@ Blocking and explicit nonblocking Linux TCP/UDP networking with level-triggered
 epoll is available through `import "net"`, with owned sockets, safe borrowed
 slices and Result errors. See [the API](docs/networking.md),
 [the Phase 12B report](docs/readiness-report.md) and
-[the echo example](examples/tcp_echo.tarn). Phase 12C adds
-[manual suspended operations and a single-thread executor](docs/suspended-execution-report.md).
-Async function syntax and await remain deferred.
+[the echo example](examples/tcp_echo.tarn). Phase 12C and Phase 13 add
+[suspended execution](docs/suspended-execution-report.md) and
+[source async lowering](docs/phase-13-report.md) (`async fn` and `await` on a
+single-thread executor); see [the async echo example](examples/28_async.tarn)
+and [ADR 0037](docs/adr/0037-source-async-lowering.md). Async closures/blocks,
+`select`/`join` combinators, multi-thread executors and cancellation remain deferred.
 
 ## Contributing
 

@@ -88,7 +88,7 @@ concrete generic ADTs, borrowed fat slices, nonescaping borrowed closures and
 checked shifts/float-to-int casts. Unknown bootstrap stdlib APIs now fail with
 E3040. See [ADR 0028](adr/0028-native-feature-completeness.md) and
 [ADR 0029](adr/0029-checked-shifts-and-float-casts.md). Borrowed dynamic dispatch now executes (ADR 0030); owned dynamic objects remain
-rejected. Optimization remains deferred. Phase 10 adds shared, mutable and consuming callable modes, `move fn` ownership captures and safe returned owned closures (ADR 0032).
+rejected. Optimization remains deferred. Phase 10 adds shared, mutable and consuming callable modes, `move fn` ownership captures and safe returned owned closures (ADR 0032). Phase 13 adds source async lowering (`async fn` and `await`) over Phase-12C suspended execution on a single-thread executor; see [the async echo example](../examples/28_async.tarn), [ADR 0037](adr/0037-source-async-lowering.md) and [the Phase 13 report](phase-13-report.md). Async closures/blocks, `select`/`join` combinators, multi-thread executors, and cancellation remain deferred.
 
 
 ## Dependency management and supply-chain security
