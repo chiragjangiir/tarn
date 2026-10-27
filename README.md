@@ -1,5 +1,12 @@
 <p align="center"><img src="docs/assets/logo.svg" alt="Tarn" width="360"></p>
 
+<p align="center">
+<a href="https://github.com/tarn-lng/tarn/actions/workflows/ci.yml"><img src="https://github.com/tarn-lng/tarn/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+<a href="#license"><img src="https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue" alt="License: MIT OR Apache-2.0"></a>
+<img src="https://img.shields.io/badge/platform-Linux%20x86__64%20%7C%20ARM64-lightgrey" alt="Platform: Linux x86_64 | ARM64">
+<img src="https://img.shields.io/badge/status-experimental-orange" alt="Status: experimental">
+</p>
+
 # Tarn
 
 A memory-safe systems language without a mandatory GC: ownership and borrowing
@@ -28,6 +35,18 @@ cargo test
 Docs: [language](docs/language.md) · [ownership](docs/ownership.md) ·
 [errors](docs/errors.md) · [architecture](docs/architecture.md) ·
 [ADRs](docs/adr/) · [packages](docs/packages.md) · [dependency security](docs/dependency-security.md). Editor: [editors/vscode](editors/vscode).
+
+## Quickstart
+
+Requires Rust 1.88+, a system `cc`, C11/libc headers and libm on Linux x86_64 or ARM64.
+
+```bash
+git clone https://github.com/tarn-lng/tarn && cd tarn
+cargo build --locked --release
+./target/release/tarn run examples/01_hello.tarn
+./target/release/tarn init /tmp/hello-tarn && cd /tmp/hello-tarn
+"$OLDPWD/target/release/tarn" run
+```
 
 ## Packages
 
@@ -74,3 +93,12 @@ slices and Result errors. See [the API](docs/networking.md),
 [the echo example](examples/tcp_echo.tarn). Phase 12C adds
 [manual suspended operations and a single-thread executor](docs/suspended-execution-report.md).
 Async function syntax and await remain deferred.
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) and the [Code of Conduct](CODE_OF_CONDUCT.md).
+
+## License
+
+Licensed under either of [Apache License, Version 2.0](LICENSE-APACHE) or
+[MIT license](LICENSE-MIT) at your option.
