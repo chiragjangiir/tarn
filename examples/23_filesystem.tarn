@@ -9,3 +9,10 @@ fn check_sdk() Result<void, io.Error> {
     for entry in entries.as_slice() { print(entry.name()) }
     return Ok(())
 }
+
+fn main() {
+    match check_sdk() {
+        Ok(_) => print("sdk found")
+        Err(error) => print("sdk not found at /opt/xlinux/sdk")
+    }
+}

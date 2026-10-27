@@ -9,3 +9,10 @@ fn swift_version() Result<string, io.Error> {
     }
     return output.stdout_text()
 }
+
+fn main() {
+    match swift_version() {
+        Ok(version) => print(version)
+        Err(error) => print("swiftc is not available")
+    }
+}
