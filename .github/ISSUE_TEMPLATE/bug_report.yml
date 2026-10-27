@@ -1,0 +1,40 @@
+name: Bug report
+description: The compiler, tooling or a std package behaves incorrectly.
+labels: [bug]
+body:
+  - type: textarea
+    id: program
+    attributes:
+      label: Minimal program
+      description: The smallest `.tarn` file (or package) that reproduces the problem.
+      render: tarn
+    validations:
+      required: true
+  - type: textarea
+    id: command
+    attributes:
+      label: Command and output
+      description: The exact command (`tarn check`, `tarn run`, `tarn build`, ...) and its full output, including any error code such as E3040.
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Tarn version or commit
+      description: Output of `tarn version` or the commit SHA you built.
+    validations:
+      required: true
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Platform
+      options: [Linux x86_64, Linux ARM64 (aarch64), Other]
+    validations:
+      required: true
