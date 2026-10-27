@@ -6,6 +6,15 @@ on:
 permissions:
   contents: read
 jobs:
+  msrv:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@1.88
+      - run: cargo build --locked --release -p tarn
   test:
     strategy:
       fail-fast: false
@@ -32,6 +41,13 @@ jobs:
           # Keep Cranelift's IR verifier on for the whole test suite.
           TARN_VERIFY_CODEGEN: '1'
       - run: cargo build --locked --release -p tarn -p tarn-lsp
+      - name: Examples smoke (tarn check)
+        run: |
+          for example in examples/*.tarn; do
+            echo "::group::tarn check $example"
+            target/release/tarn check "$example"
+            echo "::endgroup::"
+          done
       - name: Native application smoke
         run: |
           target/release/tarn build examples/csv_report/main.tarn -o /tmp/tarn-csv-report
