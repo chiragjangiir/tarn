@@ -3,6 +3,7 @@ name = "tarn_fmt"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+rust-version.workspace = true
 
 [dependencies]
 tarn_diagnostics = { path = "../../compiler/diagnostics" }

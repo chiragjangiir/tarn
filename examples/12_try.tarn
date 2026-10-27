@@ -18,3 +18,22 @@ fn first_line(text &string) Result<string, io.Error> {
     if lines.is_empty() { return Err(io.Error.new(io.ErrorKind.InvalidData)) }
     return Ok(lines.get(usize(0)).clone())
 }
+
+fn main() {
+    path := "/tmp/tarn-example-12.conf"
+    match fs.write_text(&path, &"orvix\nunused") {
+        Ok(_) => {}
+        Err(error) => print("could not write sample config")
+    }
+    match load(&path) {
+        Ok(config) => {
+            print(config.name)
+            print(config.port)
+        }
+        Err(error) => print("could not load config")
+    }
+    match load(&"/tmp/tarn-example-12-missing.conf") {
+        Ok(config) => print(config.name)
+        Err(error) => print("missing config reported as error")
+    }
+}
