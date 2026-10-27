@@ -3,6 +3,7 @@ name = "tarn_packages"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+rust-version.workspace = true
 
 [dependencies]
 tarn_driver = { path = "../../compiler/driver" }
